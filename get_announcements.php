@@ -1,9 +1,14 @@
 <?php
-// 🚨 CORS HEADERS - Crucial for mobile apps to connect
+// CORS HEADERS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
 // Connect to the database
 require_once 'config.php';
@@ -16,22 +21,17 @@ $announcements = [];
 
 if ($result && $result->num_rows > 0) {
     while ($row = $result->fetch_assoc()) {
-        // Format the date nicely so Flutter doesn't have to do the math
         $row['created_at'] = date('M d, Y - h:i A', strtotime($row['created_at']));
-        
-        // Ensure image path isn't strictly null in JSON
         $row['image_path'] = $row['image_path'] ?? '';
-        
         $announcements[] = $row;
     }
 }
 
-// Send the JSON package across the bridge!
 echo json_encode([
     'success' => true, 
-    // 🚀 THE FIX: Renamed 'announcements' to 'data' to match your Flutter app perfectly!
     'data' => $announcements 
 ]);
 
+$conn->close();
 exit();
 ?>

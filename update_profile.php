@@ -1,15 +1,18 @@
 <?php
-// Prevent PHP warnings from ruining our clean JSON output
-error_reporting(0);
-ini_set('display_errors', 0);
-
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
 require_once 'config.php';
 
-$user_id = $_POST['userId'] ?? $_POST['id'] ?? null;
+$raw_id = $_POST['userId'] ?? $_POST['id'] ?? null;
+$user_id = $raw_id !== null ? (int)$raw_id : null;
 
 if (!$user_id) {
     echo json_encode(["success" => false, "message" => "Missing User ID"]);
@@ -18,9 +21,9 @@ if (!$user_id) {
 
 // Handle Manage Profile (Phone Number & Password Change)
 if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
-    $phone = $_POST['phone_number'] ?? '';
+    $phone       = $_POST['phone_number'] ?? '';
     $current_pwd = $_POST['current_password'] ?? '';
-    $new_pwd = $_POST['new_password'] ?? '';
+    $new_pwd     = $_POST['new_password'] ?? '';
 
     // 1. Update phone number in user_profiles
     $stmt_phone = $conn->prepare("UPDATE user_profiles SET phone_number = ? WHERE user_id = ?");
@@ -45,24 +48,26 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
             $stmt_upd->close();
             
             echo json_encode(["success" => true, "message" => "Profile & password updated successfully!"]);
+            $conn->close();
             exit();
         } else {
             echo json_encode(["success" => false, "message" => "Incorrect current password!"]);
+            $conn->close();
             exit();
         }
     }
 
     echo json_encode(["success" => true, "message" => "Profile updated successfully!"]);
+    $conn->close();
     exit();
 }
 
-// Safely grab all variables
+// Safely grab settings variables
 $department = $_POST['department'] ?? '';
-$barangay = $_POST['barangay'] ?? '';
-$theme = $_POST['theme'] ?? 'dark';
-$font_size = $_POST['font_size'] ?? '16px';
-// 🚀 FIX: Default to 0 instead of 1 if missing so status isn't forcibly set to online
-$is_online = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
+$barangay   = $_POST['barangay'] ?? '';
+$theme      = $_POST['theme'] ?? 'dark';
+$font_size  = $_POST['font_size'] ?? '16px';
+$is_online  = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
 
 $conn->begin_transaction();
 
@@ -76,9 +81,14 @@ try {
     $stmt1->close();
 
     // 2. Safely check if this user already has a profile settings row
-    $check = $conn->query("SELECT id FROM user_profiles WHERE user_id = $user_id");
+    $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
+    $stmt_check->bind_param("i", $user_id);
+    $stmt_check->execute();
+    $check_result = $stmt_check->get_result();
+    $has_profile = $check_result && $check_result->num_rows > 0;
+    $stmt_check->close();
     
-    if ($check && $check->num_rows > 0) {
+    if ($has_profile) {
         $stmt2 = $conn->prepare("UPDATE user_profiles SET theme = ?, font_size = ? WHERE user_id = ?");
         $stmt2->bind_param("ssi", $theme, $font_size, $user_id);
         if (!$stmt2->execute()) throw new Exception("Profile update failed: " . $stmt2->error);

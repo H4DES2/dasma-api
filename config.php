@@ -98,3 +98,4 @@ function isInsideDasma($lat, $lng) {
     }
     return $inside;
 }
+?>

@@ -1,17 +1,17 @@
 <?php
 error_reporting(E_ALL); 
-ini_set('display_errors', 0); // Hide raw HTML errors, we want JSON only
+ini_set('display_errors', 0);
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// 1. Force JSON output even if a fatal syntax/engine error occurs
 register_shutdown_function(function() {
     $error = error_get_last();
     if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
@@ -55,7 +55,7 @@ try {
                 i.*, i.backup_requested, 
                 u.first_name as reporter_fname, 
                 u.last_name as reporter_lname,
-                (SELECT phone_number FROM user_profiles WHERE user_id = u.id LIMIT 1) as reporter_phone,
+                (SELECT phone FROM client_profiles WHERE user_id = u.id LIMIT 1) as reporter_phone,
                 (SELECT log_message FROM incident_logs WHERE incident_id = i.id ORDER BY created_at ASC LIMIT 1) as latest_log
             FROM incidents i 
             LEFT JOIN users u ON i.reported_by = u.id 
@@ -71,16 +71,16 @@ try {
     $result = $stmt2->get_result();
 
     $jobs = [];
-    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_ADDR'] ?? '127.0.0.1'; // Safer URL generation
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https" : "http";
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
 
     while($row = $result->fetch_assoc()) {
-        $row['image_url'] = !empty($row['image_path']) ? 'http://' . $host . '/dasma_api/' . $row['image_path'] : null;
+        $row['image_url'] = !empty($row['image_path']) ? $scheme . '://' . $host . '/' . ltrim($row['image_path'], '/') : null;
         $jobs[] = $row;
     }
 
     $stmt2->close();
 
-    // 2. THE FIX: JSON_INVALID_UTF8_SUBSTITUTE stops emojis/bad chars from crashing the JSON encoder
     $json_output = json_encode([
         "success" => true,
         "team_name" => $my_team,
@@ -93,7 +93,7 @@ try {
     
     echo $json_output;
 
-} catch (Throwable $e) { // 3. THE FIX: Catch 'Throwable' to intercept fatal PHP Engine Errors
+} catch (Throwable $e) {
     echo json_encode(["success" => false, "jobs" => [], "message" => "Server Error: " . $e->getMessage()]);
 }
 

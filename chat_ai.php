@@ -1,10 +1,9 @@
 <?php
-// 1. MUST BE AT THE VERY TOP: Allow CORS headers for Flutter Web preflight checks
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Content-Type: application/json; charset=UTF-8");
 
-// 2. Intercept and fulfill browser OPTIONS preflight requests immediately
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit(0);
@@ -21,7 +20,12 @@ if (empty($userMessage)) {
 }
 
 $apiKey = $_ENV['GEMINI_API_KEY'] ?? getenv('GEMINI_API_KEY') ?? '';
-// Update $url line in chat_ai.php:
+
+if (empty($apiKey)) {
+    echo json_encode(['success' => false, 'reply' => 'Gemini API key is not configured on the server.']);
+    exit();
+}
+
 $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $apiKey;
 
 $systemInstruction = "You are the CDRRMO Emergency Virtual Assistant for Dasmariñas City. "
@@ -52,7 +56,7 @@ curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
 
 $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlErr = curl_error($ch);
+$curlErr  = curl_error($ch);
 curl_close($ch);
 
 if ($httpCode === 200 && $response) {
@@ -64,6 +68,5 @@ if ($httpCode === 200 && $response) {
     }
 }
 
-// Outputs debug info if Gemini fails so you can see why
-echo json_encode(['success' => true, 'reply' => "Error - HTTP: $httpCode | cURL: $curlErr | Details: $response"]);
+echo json_encode(['success' => false, 'reply' => "Error - HTTP: $httpCode | cURL: $curlErr | Details: $response"]);
 ?>

@@ -1,6 +1,14 @@
 <?php
 header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
 require_once 'config.php';
 
 // Get the data sent from your Superadmin Dashboard
@@ -13,7 +21,6 @@ if (!$incident_id || !$team_name) {
 }
 
 try {
-    // 🚀 THE LOGIC: This updates the row so you don't have to type it manually
     $sql = "UPDATE incidents 
             SET assigned_to = ?, 
                 status = 'dispatched' 
@@ -27,7 +34,10 @@ try {
     } else {
         echo json_encode(["success" => false, "message" => "Database update failed"]);
     }
+    $stmt->close();
 } catch (Exception $e) {
     echo json_encode(["success" => false, "message" => $e->getMessage()]);
 }
+
+$conn->close();
 ?>

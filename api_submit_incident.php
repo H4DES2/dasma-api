@@ -1,8 +1,13 @@
 <?php
 header("Access-Control-Allow-Origin: *");
-header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
 require_once 'config.php';
 
@@ -50,14 +55,16 @@ if (!$user_id_int) {
     exit();
 }
 
-// 2. Handle Image Upload
+// 2. Handle Image Upload (cross-platform path relative to current folder)
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
-    $target_dir = $_SERVER['DOCUMENT_ROOT'] . "/dasma_api/uploads/evidence/";
-    if (!is_dir($target_dir)) mkdir($target_dir, 0777, true);
+    $target_dir = __DIR__ . "/uploads/evidence/";
+    if (!is_dir($target_dir)) {
+        mkdir($target_dir, 0777, true);
+    }
 
     $file_extension = pathinfo($_FILES['evidence_photo']['name'], PATHINFO_EXTENSION);
-    $new_filename = 'inc_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
-    $target_file = $target_dir . $new_filename;
+    $new_filename   = 'inc_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
+    $target_file    = $target_dir . $new_filename;
 
     if (move_uploaded_file($_FILES['evidence_photo']['tmp_name'], $target_file)) {
         $image_path = 'uploads/evidence/' . $new_filename;
@@ -69,7 +76,7 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
 $conn->begin_transaction(); 
 
 try {
-    // A. Insert into incidents table (sets status to 'rejected' if outside Dasmariñas)
+    // A. Insert into incidents table
     $sql_inc = "INSERT INTO incidents (client_id, barangay, incident_type, severity, latitude, longitude, status, reported_by, is_verified, image_path, admin_remarks) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
@@ -90,7 +97,7 @@ try {
         $stmt_log->close();
     }
 
-    // C. Automatically route into spam_reports (Report Bin) if out of jurisdiction
+    // C. Automatically route into spam_reports if out of jurisdiction
     if ($is_out_of_bounds) {
         $spam_reason = "Out of Jurisdiction: Report originated from $barangay ($latitude, $longitude).";
         $sql_spam = "INSERT INTO spam_reports (incident_id, reason) VALUES (?, ?)";

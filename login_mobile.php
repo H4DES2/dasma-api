@@ -1,44 +1,48 @@
 <?php
-header('Content-Type: application/json');
-$conn = new mysqli("localhost", "root", "", "alert");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json; charset=UTF-8");
 
-if ($conn->connect_error) {
-    echo json_encode(["status" => "error", "message" => "Connection failed"]);
-    exit;
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
+
+require_once 'config.php'; 
 
 $username = $_POST['username'] ?? '';
 $password = $_POST['password'] ?? '';
 
 if (empty($username) || empty($password)) {
-    echo json_encode(["status" => "error", "message" => "Username and password required"]);
-    exit;
+    echo json_encode(["success" => false, "message" => "Username and password required"]);
+    exit();
 }
 
-// 1. Check the 'users' table (using the columns we just added)
-$sql = "SELECT * FROM users WHERE username = '$username' LIMIT 1";
-$result = $conn->query($sql);
+$stmt = $conn->prepare("SELECT id, username, password, first_name, last_name, role FROM users WHERE username = ? LIMIT 1");
+$stmt->bind_param("s", $username);
+$stmt->execute();
+$result = $stmt->get_result();
 
-if ($result->num_rows > 0) {
+if ($result && $result->num_rows > 0) {
     $user = $result->fetch_assoc();
 
-    // 2. Verify hashed password (works with the signup we just built)
     if (password_verify($password, $user['password'])) {
         echo json_encode([
-            "status" => "success",
-            "message" => "Login successful!",
-            "user" => [
-                "username" => $user['username'],
-                "fname" => $user['first_name'], 
-                "lname" => $user['last_name']
-            ]
+            "success" => true,
+            "id" => $user['id'],
+            "username" => $user['username'],
+            "fname" => $user['first_name'],
+            "lname" => $user['last_name'],
+            "role" => $user['role']
         ]);
     } else {
-        echo json_encode(["status" => "error", "message" => "Invalid password"]);
+        echo json_encode(["success" => false, "message" => "Incorrect password"]);
     }
 } else {
-    echo json_encode(["status" => "error", "message" => "User not found"]);
+    echo json_encode(["success" => false, "message" => "User does not exist"]);
 }
 
+$stmt->close();
 $conn->close();
 ?>
