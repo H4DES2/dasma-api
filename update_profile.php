@@ -1,15 +1,6 @@
 <?php
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-require_once 'config.php';
 
 $raw_id = $_POST['userId'] ?? $_POST['id'] ?? null;
 $user_id = $raw_id !== null ? (int)$raw_id : null;
@@ -25,13 +16,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     $current_pwd = $_POST['current_password'] ?? '';
     $new_pwd     = $_POST['new_password'] ?? '';
 
-    // 1. Update phone number in user_profiles
     $stmt_phone = $conn->prepare("UPDATE user_profiles SET phone_number = ? WHERE user_id = ?");
     $stmt_phone->bind_param("si", $phone, $user_id);
     $stmt_phone->execute();
     $stmt_phone->close();
 
-    // 2. Securely Handle Password Change if requested
     if (!empty($current_pwd) && !empty($new_pwd)) {
         $stmt_pwd = $conn->prepare("SELECT password FROM users WHERE id = ?");
         $stmt_pwd->bind_param("i", $user_id);
@@ -62,7 +51,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     exit();
 }
 
-// Safely grab settings variables
 $department = $_POST['department'] ?? '';
 $barangay   = $_POST['barangay'] ?? '';
 $theme      = $_POST['theme'] ?? 'dark';
@@ -72,7 +60,6 @@ $is_online  = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
 $conn->begin_transaction();
 
 try {
-    // 1. Update the main USERS table (Team, Brgy, and Duty Status)
     $stmt1 = $conn->prepare("UPDATE users SET is_online = ?, department = ?, barangay = ? WHERE id = ?");
     $stmt1->bind_param("issi", $is_online, $department, $barangay, $user_id);
     if (!$stmt1->execute()) {
@@ -80,7 +67,6 @@ try {
     }
     $stmt1->close();
 
-    // 2. Safely check if this user already has a profile settings row
     $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
     $stmt_check->bind_param("i", $user_id);
     $stmt_check->execute();
@@ -109,4 +95,3 @@ try {
 }
 
 $conn->close();
-?>

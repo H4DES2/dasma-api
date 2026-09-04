@@ -1,15 +1,6 @@
 <?php
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-require_once 'config.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userId = isset($_POST['userId']) ? intval($_POST['userId']) : 0;
@@ -26,14 +17,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $fileExtension = strtolower(pathinfo($image['name'], PATHINFO_EXTENSION));
-    $allowedTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    $allowedTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'jfif'];
     
     if (!in_array($fileExtension, $allowedTypes)) {
-        echo json_encode(["success" => false, "message" => "Invalid file format. Only JPG/PNG/WEBP allowed."]);
-        exit;
-    }
+    echo json_encode(["success" => false, "message" => "Invalid file format. Only JPG/PNG/WEBP/JFIF allowed."]);
+    exit;
+}
 
-    $fileName = "profile_" . $userId . "_" . time() . "." . $fileExtension;
+   $fileName = "profile_" . $userId . "_" . time() . "." . $fileExtension;
     $targetFilePath = $targetDir . $fileName;
 
     if (move_uploaded_file($image['tmp_name'], $targetFilePath)) {
@@ -67,4 +58,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $conn->close();
-?>

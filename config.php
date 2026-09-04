@@ -1,4 +1,15 @@
 <?php
+if (!headers_sent()) {
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
 // ==========================================
 // --- .ENV LOADER FUNCTION ---
 // ==========================================
@@ -57,19 +68,31 @@ define('CLIENT_ROLE', 'client');
 // ==========================================
 $conn = mysqli_init();
 
+// Fail fast after 4 seconds instead of freezing Flutter past its 15s timeout
+$conn->options(MYSQLI_OPT_CONNECT_TIMEOUT, 4);
+
 if (DB_PORT !== 3306) {
     // Cloud database with SSL (Aiven, Render, TiDB)
     $conn->options(MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, false);
     $conn->ssl_set(NULL, NULL, NULL, NULL, NULL);
-    $connected = @$conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, NULL, MYSQLI_CLIENT_SSL);
+    $ssl_flag = defined('MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT') 
+        ? MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT 
+        : MYSQLI_CLIENT_SSL;
+    $connected = @$conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, NULL, $ssl_flag);
 } else {
     // Local fallback (Standard MySQL / XAMPP)
     $connected = @$conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
 }
 
 if (!$connected) {
-    error_log("Database connection failed: " . mysqli_connect_error());
-    die(json_encode(["success" => false, "message" => "Database connection unavailable."]));
+    $err = mysqli_connect_error();
+    error_log("Database connection failed: " . $err);
+    header("Content-Type: application/json; charset=UTF-8");
+    die(json_encode([
+        "status" => "error",
+        "success" => false,
+        "message" => "Database connection unavailable: " . $err
+    ]));
 }
 
 $conn->set_charset("utf8mb4");
@@ -98,4 +121,3 @@ function isInsideDasma($lat, $lng) {
     }
     return $inside;
 }
-?>

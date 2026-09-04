@@ -1,15 +1,6 @@
 <?php
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-require_once 'config.php';
 
 // 1. Collect Data 
 $raw_id        = $_POST['reported_by'] ?? $_POST['user_id'] ?? null;
@@ -21,14 +12,14 @@ $latitude      = isset($_POST['latitude']) ? (float)$_POST['latitude'] : 0.0;
 $longitude     = isset($_POST['longitude']) ? (float)$_POST['longitude'] : 0.0;
 $barangay      = $_POST['barangay'] ?? 'Unknown Location';
 
-// 🚀 PRECISE DASMARIÑAS BOUNDARIES (Excludes GenTri, Imus, Silang, Bacoor)
-$min_lat = 14.2700;
-$max_lat = 14.3680;
-$min_lng = 120.9150; // Navarro, GenTri is at 120.8942 -> fully blocked!
-$max_lng = 121.0150; // Paliparan / Salawag East -> fully included!
+// Strict Dasmarinas boundaries (excludes Silang, GenTri, Bacoor, Imus)
+$min_lat = 14.2850; // Cutoff above Silang border
+$max_lat = 14.3650;
+$min_lng = 120.9150;
+$max_lng = 121.0050;
 
-// 🚀 HYBRID CHECK: Coordinate Geofence + City Name Blacklist
-$outside_cities = ['general trias', 'gen. trias', 'gentri', 'imus', 'silang', 'tanza', 'bacoor', 'carmona', 'gma', 'trece martires'];
+// Hybrid check: Coordinate Geofence + Blacklisted Municipalities
+$outside_cities = ['general trias', 'gen. trias', 'gentri', 'imus', 'silang', 'tanza', 'bacoor', 'carmona', 'gma', 'trece martires', 'biga'];
 $contains_outside_city = false;
 
 foreach ($outside_cities as $city) {
@@ -40,9 +31,17 @@ foreach ($outside_cities as $city) {
 
 $is_out_of_bounds = ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng || $contains_outside_city);
 
-// Status routing
-$status        = $is_out_of_bounds ? 'rejected' : 'active';
-$admin_remarks = $is_out_of_bounds ? 'Out of Jurisdiction (Auto-Rejected)' : null;
+// Hard reject if outside jurisdiction
+if ($is_out_of_bounds) {
+    echo json_encode([
+        "success" => false,
+        "message" => "Reporting is restricted to the City of Dasmarinas jurisdiction only."
+    ]);
+    exit();
+}
+
+$status        = 'active';
+$admin_remarks = null;
 $is_verified   = 0;    
 $image_path    = null;
 
@@ -55,16 +54,22 @@ if (!$user_id_int) {
     exit();
 }
 
-// 2. Handle Image Upload (cross-platform path relative to current folder)
+// 2. Handle Image Upload
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
     $target_dir = __DIR__ . "/uploads/evidence/";
     if (!is_dir($target_dir)) {
         mkdir($target_dir, 0777, true);
     }
 
-    $file_extension = pathinfo($_FILES['evidence_photo']['name'], PATHINFO_EXTENSION);
-    $new_filename   = 'inc_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
-    $target_file    = $target_dir . $new_filename;
+    $file_extension = strtolower(pathinfo($_FILES['evidence_photo']['name'], PATHINFO_EXTENSION));
+    
+    // Normalize jfif to jpg
+    if ($file_extension === 'jfif') {
+        $file_extension = 'jpg';
+    }
+
+    $new_filename = 'inc_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
+    $target_file  = $target_dir . $new_filename;
 
     if (move_uploaded_file($_FILES['evidence_photo']['tmp_name'], $target_file)) {
         $image_path = 'uploads/evidence/' . $new_filename;
@@ -87,7 +92,7 @@ try {
     $new_incident_id = $conn->insert_id;
     $stmt_inc->close();
 
-    // B. Insert into incident_logs if details were typed
+    // B. Insert into incident_logs if details were provided
     if (!empty($description)) {
         $sql_log = "INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)";
         $stmt_log = $conn->prepare($sql_log);
@@ -95,16 +100,6 @@ try {
         $stmt_log->bind_param("iis", $new_incident_id, $user_id_int, $formatted_log);
         $stmt_log->execute();
         $stmt_log->close();
-    }
-
-    // C. Automatically route into spam_reports if out of jurisdiction
-    if ($is_out_of_bounds) {
-        $spam_reason = "Out of Jurisdiction: Report originated from $barangay ($latitude, $longitude).";
-        $sql_spam = "INSERT INTO spam_reports (incident_id, reason) VALUES (?, ?)";
-        $stmt_spam = $conn->prepare($sql_spam);
-        $stmt_spam->bind_param("is", $new_incident_id, $spam_reason);
-        $stmt_spam->execute();
-        $stmt_spam->close();
     }
 
     $conn->commit(); 

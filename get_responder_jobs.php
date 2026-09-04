@@ -55,7 +55,7 @@ try {
                 i.*, i.backup_requested, 
                 u.first_name as reporter_fname, 
                 u.last_name as reporter_lname,
-                (SELECT phone FROM client_profiles WHERE user_id = u.id LIMIT 1) as reporter_phone,
+                (SELECT phone_number FROM user_profiles WHERE user_id = u.id LIMIT 1) as reporter_phone,
                 (SELECT log_message FROM incident_logs WHERE incident_id = i.id ORDER BY created_at ASC LIMIT 1) as latest_log
             FROM incidents i 
             LEFT JOIN users u ON i.reported_by = u.id 
