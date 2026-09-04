@@ -2,7 +2,9 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-$raw_id = $_POST['id'] ?? $_GET['id'] ?? null;
+// Handle both standard form POST/GET and raw JSON bodies from Flutter
+$input = json_decode(file_get_contents('php://input'), true);
+$raw_id = $_POST['id'] ?? $_GET['id'] ?? $input['id'] ?? null;
 
 if ($raw_id !== null) {
     $user_id = (int)$raw_id; 
