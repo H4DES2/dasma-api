@@ -8,25 +8,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
-require_once __DIR__ . '/vendor/autoload.php';
+
+require_once __DIR__ . '/mail_helper.php';
 require_once 'config.php';
 
-// Import PHPMailer if present
-if (file_exists(__DIR__ . '/vendor/autoload.php')) {
-    require_once __DIR__ . '/vendor/autoload.php';
-} elseif (file_exists(__DIR__ . '/../alert/vendor/autoload.php')) {
-    require_once __DIR__ . '/../alert/vendor/autoload.php';
-}
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $fname    = $_POST['fname'] ?? '';
-    $lname    = $_POST['lname'] ?? '';
-    $username = $_POST['username'] ?? '';
-    $email    = $_POST['email'] ?? '';
-    $mobile   = $_POST['mobile'] ?? ''; 
+    $fname    = trim($_POST['fname'] ?? '');
+    $lname    = trim($_POST['lname'] ?? '');
+    $username = trim($_POST['username'] ?? '');
+    $email    = trim($_POST['email'] ?? '');
+    $mobile   = trim($_POST['mobile'] ?? ''); 
     $password = $_POST['password'] ?? '';
 
     if (empty($fname) || empty($username) || empty($email) || empty($mobile) || empty($password)) {
@@ -56,56 +47,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $profile_stmt->close();
             }
             
-            // Send OTP email if PHPMailer exists
-            if (class_exists('PHPMailer\PHPMailer\PHPMailer')) {
-                $mail = new PHPMailer(true);
-                try {
-                    $mail->isSMTP();
-                    $mail->SMTPOptions = array(
-                        'ssl' => array(
-                            'verify_peer' => false,
-                            'verify_peer_name' => false,
-                            'allow_self_signed' => true
-                        )
-                    );
+            // Dispatch OTP via Brevo HTTPS API (Port 443)
+            $fullName = trim("$fname $lname");
+            $emailSent = sendBrevoOtpEmail($email, $fullName, $otp_code);
 
-                    $mail->Host       = SMTP_HOST; 
-                    $mail->SMTPAuth   = true;
-                    $mail->Username   = SMTP_USER; 
-                    $mail->Password   = SMTP_PASS;
-                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS; 
-                    $mail->Port       = 465;
-
-                    $mail->setFrom(FROM_EMAIL, FROM_NAME);
-                    $mail->addAddress($email, $fname); 
-
-                    $mail->isHTML(true);
-                    $mail->Subject = 'DASMA ALERT - Your Verification Code';
-                    $mail->Body    = "Hello <b>" . htmlspecialchars($fname) . "</b>,<br><br>Your verification code is: <h2 style='color:#D32F2F;'>$otp_code</h2><br><br>Do not share this code.";
-                    $mail->AltBody = "Hello $fname, your code is: $otp_code";
-
-                    $mail->send();
-
-                    echo json_encode([
-                        "status" => "success", 
-                        "success" => true, 
-                        "message" => "Account created! Check email for OTP.",
-                        "otp" => $otp_code
-                    ]);
-                } catch (\Exception $e) {
-                    echo json_encode([
-                        "status" => "error", 
-                        "success" => true, 
-                        "message" => "Account created, but email failed: " . $mail->ErrorInfo,
-                        "otp" => $otp_code 
-                    ]);
-                }
+            if ($emailSent) {
+                echo json_encode([
+                    "status"  => "success", 
+                    "success" => true, 
+                    "message" => "Account created! Check email for OTP.",
+                    "otp"     => $otp_code
+                ]);
             } else {
                 echo json_encode([
-                    "status" => "success", 
-                    "success" => true, 
-                    "message" => "Account created! OTP generated.",
-                    "otp" => $otp_code
+                    "status"  => "error", 
+                    "success" => false, 
+                    "message" => "Account created, but failed to deliver verification email. Please tap Resend Code."
                 ]);
             }
 
