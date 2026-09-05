@@ -8,13 +8,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
-
+require_once __DIR__ . '/vendor/autoload.php';
 require_once 'config.php';
 
-if (file_exists(__DIR__ . '/vendor/autoload.php')) {
-    require_once __DIR__ . '/vendor/autoload.php';
-} elseif (file_exists(__DIR__ . '/../alert/vendor/autoload.php')) {
-    require_once __DIR__ . '/../alert/vendor/autoload.php';
+// Locate vendor autoloader across standard web paths and Docker roots
+$autoload_paths = [
+    __DIR__ . '/vendor/autoload.php',
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../vendor/autoload.php',
+    $_SERVER['DOCUMENT_ROOT'] . '/vendor/autoload.php',
+    '/var/www/html/vendor/autoload.php'
+];
+
+foreach ($autoload_paths as $path) {
+    if (file_exists($path)) {
+        require_once $path;
+        break;
+    }
 }
 
 use PHPMailer\PHPMailer\PHPMailer;
