@@ -73,8 +73,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $mail->SMTPAuth   = true;
                     $mail->Username   = SMTP_USER; 
                     $mail->Password   = SMTP_PASS;
-                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS; 
-                    $mail->Port       = SMTP_PORT; 
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS; 
+                    $mail->Port       = 465;
 
                     $mail->setFrom(FROM_EMAIL, FROM_NAME);
                     $mail->addAddress($email, $fname); 
