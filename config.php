@@ -49,8 +49,9 @@ define('DB_USER',    $_ENV['DB_USER']   ?? 'root');
 define('DB_PASS',    $_ENV['DB_PASS']   ?? '');
 define('DB_NAME',    $_ENV['DB_NAME']   ?? 'alert');
 
+// 🚀 FIXED: Port 465 connects over SSL, bypassing Render 587 port blocks
 define('SMTP_HOST',  $_ENV['SMTP_HOST'] ?? 'smtp.gmail.com');
-define('SMTP_PORT',  (int)($_ENV['SMTP_PORT'] ?? 587));
+define('SMTP_PORT',  (int)($_ENV['SMTP_PORT'] ?? 465));
 define('SMTP_USER',  $_ENV['SMTP_USER'] ?? '');
 define('SMTP_PASS',  $_ENV['SMTP_PASS'] ?? '');
 define('FROM_EMAIL', $_ENV['FROM_EMAIL'] ?? SMTP_USER);
