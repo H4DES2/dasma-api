@@ -9,8 +9,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require_once __DIR__ . '/mail_helper.php';
 require_once 'config.php';
+
+function sendBrevoOtpEmail($recipientEmail, $recipientName, $otpCode) {
+    $apiKey = getenv('BREVO_API_KEY') ?: ($_ENV['BREVO_API_KEY'] ?? '');
+    $senderEmail = 'jacobbataclanortega@gmail.com';
+
+    $payload = [
+        'sender'      => ['name' => 'Dasma Alert', 'email' => $senderEmail],
+        'to'          => [['email' => $recipientEmail, 'name' => $recipientName]],
+        'subject'     => 'Dasma Alert - Your Verification Code',
+        'htmlContent' => '
+            <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+                <h2 style="color: #d32f2f;">Dasma Alert Verification</h2>
+                <p>Hello ' . htmlspecialchars($recipientName) . ',</p>
+                <p>Your one-time verification code is:</p>
+                <div style="font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #d32f2f; margin: 16px 0;">' . $otpCode . '</div>
+                <p>This code will expire shortly. Do not share it with anyone.</p>
+            </div>'
+    ];
+
+    $ch = curl_init('https://api.brevo.com/v3/smtp/email');
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'api-key: ' . trim($apiKey),
+        'Content-Type: application/json',
+        'Accept: application/json'
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return ($httpCode === 201 || $httpCode === 200);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fname    = trim($_POST['fname'] ?? '');
