@@ -164,23 +164,58 @@ if (!$user_id_int) {
     exit();
 }
 
-// 2. Handle Image Upload
+// 2. Handle Image Upload via Cloudinary
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
-    $target_dir = __DIR__ . "/uploads/evidence/";
-    if (!is_dir($target_dir)) {
-        mkdir($target_dir, 0777, true);
-    }
+    $cloud_name = getenv('CLOUDINARY_CLOUD_NAME') ?: ($_ENV['CLOUDINARY_CLOUD_NAME'] ?? null);
+    $api_key    = getenv('CLOUDINARY_API_KEY') ?: ($_ENV['CLOUDINARY_API_KEY'] ?? null);
+    $api_secret = getenv('CLOUDINARY_API_SECRET') ?: ($_ENV['CLOUDINARY_API_SECRET'] ?? null);
 
-    $file_extension = strtolower(pathinfo($_FILES['evidence_photo']['name'], PATHINFO_EXTENSION));
-    if ($file_extension === 'jfif') {
-        $file_extension = 'jpg';
-    }
+    if ($cloud_name && $api_key && $api_secret) {
+        $file_tmp   = $_FILES['evidence_photo']['tmp_name'];
+        $file_mime  = mime_content_type($file_tmp);
+        $file_name  = $_FILES['evidence_photo']['name'];
+        $timestamp  = time();
 
-    $new_filename = 'inc_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
-    $target_file  = $target_dir . $new_filename;
+        // Generate Signature
+        $params_to_sign = [
+            'folder'    => 'dasma_evidence',
+            'timestamp' => $timestamp
+        ];
+        ksort($params_to_sign);
 
-    if (move_uploaded_file($_FILES['evidence_photo']['tmp_name'], $target_file)) {
-        $image_path = 'uploads/evidence/' . $new_filename;
+        $sig_parts = [];
+        foreach ($params_to_sign as $k => $v) {
+            $sig_parts[] = "{$k}={$v}";
+        }
+        $sig_string = implode('&', $sig_parts) . $api_secret;
+        $signature  = sha1($sig_string);
+
+        // Prepare multipart cURL upload
+        $cfile = new CURLFile($file_tmp, $file_mime, $file_name);
+        $post_fields = [
+            'file'      => $cfile,
+            'api_key'   => $api_key,
+            'timestamp' => $timestamp,
+            'signature' => $signature,
+            'folder'    => 'dasma_evidence'
+        ];
+
+        $ch = curl_init("https://api.cloudinary.com/v1_1/{$cloud_name}/image/upload");
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $post_fields);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+
+        $response  = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($http_code === 200) {
+            $json_res = json_decode($response, true);
+            if (!empty($json_res['secure_url'])) {
+                $image_path = $json_res['secure_url'];
+            }
+        }
     }
 }
 
