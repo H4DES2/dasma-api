@@ -166,9 +166,15 @@ if (!$user_id_int) {
 
 // 2. Handle Image Upload via Cloudinary
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
-    $cloud_name = getenv('CLOUDINARY_CLOUD_NAME') ?: ($_ENV['CLOUDINARY_CLOUD_NAME'] ?? null);
+    // Read from getenv or $_ENV or hardcode fallback to test
+    $cloud_name = getenv('CLOUDINARY_CLOUD_NAME') ?: ($_ENV['CLOUDINARY_CLOUD_NAME'] ?? 'wyxsiraw');
     $api_key    = getenv('CLOUDINARY_API_KEY') ?: ($_ENV['CLOUDINARY_API_KEY'] ?? null);
     $api_secret = getenv('CLOUDINARY_API_SECRET') ?: ($_ENV['CLOUDINARY_API_SECRET'] ?? null);
+
+    // If still getting the wrong name, force the correct one:
+    if ($cloud_name === 'dasma-api') {
+        $cloud_name = 'wyxsiraw';
+    }
 
     if (!$cloud_name || !$api_key || !$api_secret) {
         error_log("[CLOUDINARY ERROR] Missing environment credentials.");
