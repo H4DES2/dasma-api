@@ -2,6 +2,8 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
+date_default_timezone_set('Asia/Manila');
+
 // Fetch the latest 15 announcements
 $query = "SELECT id, title, message, image_path, created_at FROM announcements ORDER BY created_at DESC LIMIT 15";
 $result = $conn->query($query);
