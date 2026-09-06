@@ -15,49 +15,39 @@ $teams = [];
 $checkTable = $conn->query("SHOW TABLES LIKE 'response_teams'");
 
 if ($checkTable && $checkTable->num_rows > 0) {
-    $query = "SELECT id, team_name, team_type, assigned_barangay, status FROM response_teams ORDER BY team_name ASC";
+    // Left join users table to compute responder counts and member names per unit
+    $query = "
+        SELECT 
+            rt.id, 
+            rt.team_name, 
+            rt.team_type, 
+            COALESCE(rt.assigned_barangay, 'City-Wide') AS assigned_barangay, 
+            rt.status,
+            COUNT(u.id) AS member_count,
+            COALESCE(GROUP_CONCAT(CONCAT(u.first_name, ' ', u.last_name) SEPARATOR ', '), '') AS members
+        FROM response_teams rt
+        LEFT JOIN users u ON (
+            LOWER(TRIM(u.role)) = 'responder'
+            AND (
+                LOWER(TRIM(u.department)) = LOWER(TRIM(rt.team_name))
+                OR (rt.assigned_barangay IS NOT NULL AND LOWER(TRIM(u.barangay)) = LOWER(TRIM(rt.assigned_barangay)))
+            )
+        )
+        GROUP BY rt.id, rt.team_name, rt.team_type, rt.assigned_barangay, rt.status
+        ORDER BY rt.team_name ASC
+    ";
     $result = $conn->query($query);
 
     if ($result) {
         while ($row = $result->fetch_assoc()) {
+            $row['member_count'] = (int)$row['member_count'];
             $teams[] = $row;
         }
     }
 }
 
-// Fallback seed if table has no entries
-if (empty($teams)) {
-    $fallbackTeams = [
-        ["team_name" => "Central Fire Truck 1", "team_type" => "Fire"],
-        ["team_name" => "Central Fire Truck 2", "team_type" => "Fire"],
-        ["team_name" => "Alpha Rescue Unit", "team_type" => "Rescue"],
-        ["team_name" => "Bravo Rescue Unit", "team_type" => "Rescue"],
-        ["team_name" => "Medic Ambulance 1", "team_type" => "Medic"],
-        ["team_name" => "Medic Ambulance 2", "team_type" => "Medic"],
-        ["team_name" => "Police Mobile Patrol 1", "team_type" => "Police"],
-        ["team_name" => "Police Mobile Patrol 2", "team_type" => "Police"],
-    ];
 
-    foreach ($fallbackTeams as $t) {
-        $stmt = $conn->prepare("INSERT INTO response_teams (team_name, team_type, status) VALUES (?, ?, 'available')");
-        if ($stmt) {
-            $stmt->bind_param("ss", $t['team_name'], $t['team_type']);
-            $stmt->execute();
-            $stmt->close();
-        }
-    }
-
-    $res = $conn->query("SELECT id, team_name, team_type, assigned_barangay, status FROM response_teams ORDER BY team_name ASC");
-    if ($res) {
-        while ($row = $res->fetch_assoc()) {
-            $teams[] = $row;
-        }
-    }
-}
-
-// Return raw array directly to satisfy List<dynamic> decode in Flutter
 echo json_encode($teams);
-
 $conn->close();
 exit();
 ?>
