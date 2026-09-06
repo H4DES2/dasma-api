@@ -170,13 +170,14 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
     $api_key    = getenv('CLOUDINARY_API_KEY') ?: ($_ENV['CLOUDINARY_API_KEY'] ?? null);
     $api_secret = getenv('CLOUDINARY_API_SECRET') ?: ($_ENV['CLOUDINARY_API_SECRET'] ?? null);
 
-    if ($cloud_name && $api_key && $api_secret) {
+    if (!$cloud_name || !$api_key || !$api_secret) {
+        error_log("[CLOUDINARY ERROR] Missing environment credentials.");
+    } else {
         $file_tmp   = $_FILES['evidence_photo']['tmp_name'];
         $file_mime  = mime_content_type($file_tmp);
         $file_name  = $_FILES['evidence_photo']['name'];
         $timestamp  = time();
 
-        // Generate Signature
         $params_to_sign = [
             'folder'    => 'dasma_evidence',
             'timestamp' => $timestamp
@@ -190,7 +191,6 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
         $sig_string = implode('&', $sig_parts) . $api_secret;
         $signature  = sha1($sig_string);
 
-        // Prepare multipart cURL upload
         $cfile = new CURLFile($file_tmp, $file_mime, $file_name);
         $post_fields = [
             'file'      => $cfile,
@@ -210,11 +210,11 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($http_code === 200) {
-            $json_res = json_decode($response, true);
-            if (!empty($json_res['secure_url'])) {
-                $image_path = $json_res['secure_url'];
-            }
+        $json_res = json_decode($response, true);
+        if ($http_code === 200 && !empty($json_res['secure_url'])) {
+            $image_path = $json_res['secure_url'];
+        } else {
+            error_log("[CLOUDINARY UPLOAD FAILED] HTTP {$http_code}: " . ($response ?: 'No response'));
         }
     }
 }
