@@ -68,19 +68,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $new_status = $_POST['status'] ?? '';
         $remarks    = $_POST['remarks'] ?? '';
 
-        if ($new_status === 'On Scene') {
-            $stmt_inc = $conn->prepare("UPDATE incidents SET status = 'on-scene' WHERE id = ?");
-            $stmt_inc->bind_param("i", $incident_id);
-            $stmt_inc->execute();
-            $stmt_inc->close();
+        $target_status = 'dispatched';
+        $log_action_text = '';
 
-            $stmt_t = $conn->prepare("UPDATE response_teams SET status = 'on-scene' WHERE current_incident_id = ? AND team_name = ?");
-            $stmt_t->bind_param("is", $incident_id, $team_name);
-            $stmt_t->execute();
-            $stmt_t->close();
+        $normalized_status = strtolower(trim($new_status));
+        if ($normalized_status === 'en route' || $normalized_status === 'en_route') {
+            $target_status = 'en route';
+            $log_action_text = 'EN ROUTE';
+        } elseif ($normalized_status === 'on scene' || $normalized_status === 'on-scene') {
+            $target_status = 'on-scene';
+            $log_action_text = 'ON SCENE';
+        } elseif ($normalized_status === 'resolved') {
+            $target_status = 'archived';
+            $log_action_text = 'RESOLVED';
+        }
 
-            $log_msg = "Unit [$team_name] is ON SCENE. Remarks: $remarks";
-        } elseif ($new_status === 'Resolved') {
+        if ($target_status === 'archived') {
             $stmt_inc = $conn->prepare("UPDATE incidents SET status = 'archived' WHERE id = ?");
             $stmt_inc->bind_param("i", $incident_id);
             $stmt_inc->execute();
@@ -92,15 +95,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt_t->close();
 
             $log_msg = "Unit [$team_name] RESOLVED the incident. Remarks: $remarks";
-        } elseif ($new_status === 'Backup') {
-            $stmt_inc = $conn->prepare("UPDATE incidents SET backup_requested = 1 WHERE id = ?");
-            $stmt_inc->bind_param("i", $incident_id);
+        } else {
+            $stmt_inc = $conn->prepare("UPDATE incidents SET status = ? WHERE id = ?");
+            $stmt_inc->bind_param("si", $target_status, $incident_id);
             $stmt_inc->execute();
             $stmt_inc->close();
 
-            $log_msg = "🚨 URGENT: Unit [$team_name] requested BACKUP. Remarks: $remarks";
-        } else {
-            $log_msg = "Unit [$team_name] Update: $remarks";
+            $stmt_t = $conn->prepare("UPDATE response_teams SET status = ? WHERE current_incident_id = ? AND team_name = ?");
+            $stmt_t->bind_param("sis", $target_status, $incident_id, $team_name);
+            $stmt_t->execute();
+            $stmt_t->close();
+
+            $log_msg = "Unit [$team_name] status updated to $log_action_text. Remarks: $remarks";
         }
 
         $stmt_log = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
