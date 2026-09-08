@@ -2,57 +2,31 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-// --- SPATIAL POINT-IN-POLYGON HELPER ---
-function isPointInPolygon($point, $polygon) {
-    $x = $point[0]; // lng
-    $y = $point[1]; // lat
-    $inside = false;
-    $count = count($polygon);
+// --- DATABASE SPATIAL RESOLVER ---
+function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fallback = 'Zone IV'): string {
+    if ($lat == 0.0 || $lng == 0.0) return $fallback;
 
-    for ($i = 0, $j = $count - 1; $i < $count; $j = $i++) {
-        $xi = $polygon[$i][0]; $yi = $polygon[$i][1];
-        $xj = $polygon[$j][0]; $yj = $polygon[$j][1];
+    $sql = "
+        SELECT name 
+        FROM barangays 
+        WHERE boundary IS NOT NULL 
+        ORDER BY ST_Distance(ST_SRID(boundary, 0), POINT(?, ?)) ASC 
+        LIMIT 1
+    ";
 
-        $intersect = (($yi > $y) != ($yj > $y))
-            && ($x < ($xj - $xi) * ($y - $yi) / (($yj - $yi) ?: 0.00000001) + $xi);
-        if ($intersect) $inside = !$inside;
-    }
-    return $inside;
-}
-
-function resolveGeoJsonBarangay($lat, $lng) {
-    static $geoData = null;
-    if ($geoData === null) {
-        $filePath = __DIR__ . '/dasma_boundaries.json';
-        if (file_exists($filePath)) {
-            $geoData = json_decode(file_get_contents($filePath), true);
+    $stmt = $conn->prepare($sql);
+    if ($stmt) {
+        // Point is POINT(Longitude, Latitude)
+        $stmt->bind_param("dd", $lng, $lat);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($row = $res->fetch_assoc()) {
+            $stmt->close();
+            return $row['name'];
         }
+        $stmt->close();
     }
-
-    if (!$geoData || !isset($geoData['features'])) {
-        return null;
-    }
-
-    $point = [(float)$lng, (float)$lat];
-
-    foreach ($geoData['features'] as $feature) {
-        $brgyName = $feature['properties']['name'] ?? $feature['properties']['ADM4_EN'] ?? '';
-        $geomType = $feature['geometry']['type'];
-        $coordinates = $feature['geometry']['coordinates'];
-
-        if ($geomType === 'Polygon') {
-            if (isPointInPolygon($point, $coordinates[0])) {
-                return $brgyName;
-            }
-        } elseif ($geomType === 'MultiPolygon') {
-            foreach ($coordinates as $polyRing) {
-                if (isPointInPolygon($point, $polyRing[0])) {
-                    return $brgyName;
-                }
-            }
-        }
-    }
-    return null;
+    return $fallback;
 }
 
 // 1. Collect Data 
@@ -90,65 +64,8 @@ if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $lo
     exit();
 }
 
-// --- ACCURATE BARANGAY RESOLUTION ---
-$resolved_barangay = resolveGeoJsonBarangay($latitude, $longitude);
-
-if (empty($resolved_barangay)) {
-    // Exact corridor resolution for Aguinaldo Highway / Congressional Junction / Volet's / NCST
-    if ($latitude >= 14.3180 && $latitude <= 14.3275 && $longitude >= 120.9380 && $longitude <= 120.9490) {
-        if ($latitude <= 14.3248) {
-            $resolved_barangay = 'Zone IV';
-        } elseif ($longitude <= 120.9415) {
-            $resolved_barangay = 'Zone I-A (Poblacion)';
-        } else {
-            $resolved_barangay = 'Zone I (Poblacion)';
-        }
-    } else {
-        // Strip string anomalies
-        $clean_input = trim(str_ireplace([', Dasmariñas', ', Cavite', 'Philippines', 'City of Dasmariñas', 'City'], '', $raw_barangay));
-        
-        $aliases = [
-            'manuelaville'   => 'San Agustin II',
-            'the courtyards' => 'Salawag',
-            'orchard'        => 'Salawag',
-            'summerwind'     => 'Burol Main',
-            'waltermart'     => 'San Agustin II',
-            'sm dasma'       => 'Sampaloc I',
-            'robinsons'      => 'Sampaloc I',
-            'dlsud'          => 'Zone IV',
-            'dlshsi'         => 'Zone IV',
-            'volets'         => 'Zone IV',
-            'ncst'           => 'Zone IV',
-            'poblacion'      => ($latitude <= 14.3248) ? 'Zone IV' : 'Zone I (Poblacion)'
-        ];
-
-        foreach ($aliases as $alias => $official_name) {
-            if (stripos($clean_input, $alias) !== false) {
-                $resolved_barangay = $official_name;
-                break;
-            }
-        }
-
-        // Validate against official database records
-        if (empty($resolved_barangay)) {
-            $b_stmt = $conn->prepare("SELECT name FROM barangays WHERE status = 'active' AND (LOWER(name) = LOWER(?) OR LOWER(name) LIKE LOWER(?)) LIMIT 1");
-            $like_param = "%" . $clean_input . "%";
-            $b_stmt->bind_param("ss", $clean_input, $like_param);
-            $b_stmt->execute();
-            $b_res = $b_stmt->get_result();
-            if ($row = $b_res->fetch_assoc()) {
-                $resolved_barangay = $row['name'];
-            }
-            $b_stmt->close();
-        }
-
-        if (empty($resolved_barangay)) {
-            $resolved_barangay = !empty($clean_input) ? $clean_input : 'Zone IV';
-        }
-    }
-}
-
-$barangay = $resolved_barangay;
+// Execute Spatial Distance Lookup from MySQL
+$barangay = resolveBarangaySector($conn, $latitude, $longitude, $raw_barangay);
 
 $status        = 'active';
 $admin_remarks = null;
