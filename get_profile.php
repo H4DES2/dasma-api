@@ -49,7 +49,8 @@ if ($raw_id !== null && $raw_id !== '') {
             "profile_photo" => $user['profile_photo'] ?? '', 
             "phone_number" => $user['phone_number'] ?? '',
             "theme" => $user['theme'] ?? 'dark',                
-            "font_size" => $user['font_size'] ?? '16px'         
+            "font_size" => $user['font_size'] ?? '16px',
+            "profile" => $user
         ]);
     } else {
         echo json_encode(["success" => false, "message" => "User not found."]);
