@@ -4,11 +4,11 @@ while (ob_get_level() > 0) { ob_end_clean(); }
 header("Content-Type: application/json; charset=UTF-8");
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $userId = isset($_POST['userId']) ? intval($_POST['userId']) : 0;
+    $userId = isset($_POST['userId']) ? intval($_POST['userId']) : (isset($_POST['id']) ? intval($_POST['id']) : 0);
     $image  = isset($_FILES['image']) ? $_FILES['image'] : null;
 
     if (!$image || $userId <= 0 || $image['error'] !== UPLOAD_ERR_OK) {
-        echo json_encode(["success" => false, "message" => "Missing user ID or image data."]);
+        echo json_encode(["success" => false, "message" => "Missing user ID or valid image data."]);
         exit;
     }
 
@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $allowed_exts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jfif'];
 
     if (!in_array($mime, $allowed_mimes, true) || !in_array($ext, $allowed_exts, true) || !@getimagesize($tmp_path)) {
-        echo json_encode(["success" => false, "message" => "Invalid image format."]);
+        echo json_encode(["success" => false, "message" => "Invalid image format ($mime / .$ext)."]);
         exit;
     }
 
@@ -57,6 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($http_code === 200 && !empty($json_res['secure_url'])) {
         $cloud_url = $json_res['secure_url'];
 
+        // Upsert into user_profiles table
         $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
         $stmt_check->bind_param("i", $userId);
         $stmt_check->execute();
@@ -77,11 +78,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "profile_photo" => $cloud_url
             ]);
         } else {
-            echo json_encode(["success" => false, "message" => "Database update failed."]);
+            echo json_encode(["success" => false, "message" => "Database update failed: " . $conn->error]);
         }
         if ($stmt) $stmt->close();
     } else {
-        echo json_encode(["success" => false, "message" => "Cloudinary upload failed: " . ($response ?: "HTTP $http_code")]);
+        echo json_encode([
+            "success" => false, 
+            "message" => "Cloudinary upload failed: " . ($response ?: "HTTP $http_code")
+        ]);
     }
 }
 $conn->close();
