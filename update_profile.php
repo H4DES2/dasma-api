@@ -58,7 +58,33 @@ $font_size  = $_POST['font_size'] ?? '16px';
 $is_online  = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
 
 $conn->begin_transaction();
+// Handle Profile Photo URL Update (Cloudinary sync)
+if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
+    $photo_url = trim($_POST['profile_photo'] ?? '');
 
+    $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
+    $stmt_check->bind_param("i", $user_id);
+    $stmt_check->execute();
+    $exists = ($stmt_check->get_result()->num_rows > 0);
+    $stmt_check->close();
+
+    if ($exists) {
+        $stmt = $conn->prepare("UPDATE user_profiles SET profile_photo = ? WHERE user_id = ?");
+        $stmt->bind_param("si", $photo_url, $user_id);
+    } else {
+        $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo, theme, font_size, phone_number, radio_callsign, position) VALUES (?, ?, 'dark', '16px', '', '', '')");
+        $stmt->bind_param("is", $user_id, $photo_url);
+    }
+
+    if ($stmt && $stmt->execute()) {
+        echo json_encode(["success" => true, "message" => "Photo synced to Cloudinary!"]);
+    } else {
+        echo json_encode(["success" => false, "message" => "Sync failed: " . $conn->error]);
+    }
+    if ($stmt) $stmt->close();
+    $conn->close();
+    exit();
+}
 try {
     $stmt1 = $conn->prepare("UPDATE users SET is_online = ?, department = ?, barangay = ? WHERE id = ?");
     $stmt1->bind_param("issi", $is_online, $department, $barangay, $user_id);
