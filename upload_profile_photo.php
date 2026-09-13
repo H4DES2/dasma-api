@@ -8,7 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $image  = isset($_FILES['image']) ? $_FILES['image'] : null;
 
     if (!$image || $userId <= 0 || $image['error'] !== UPLOAD_ERR_OK) {
-        echo json_encode(["success" => false, "message" => "Missing user ID or valid image data."]);
+        echo json_encode(["success" => false, "message" => "Missing user ID or image file."]);
         exit;
     }
 
@@ -22,11 +22,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $allowed_exts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jfif'];
 
     if (!in_array($mime, $allowed_mimes, true) || !in_array($ext, $allowed_exts, true) || !@getimagesize($tmp_path)) {
-        echo json_encode(["success" => false, "message" => "Invalid image format ($mime / .$ext)."]);
+        echo json_encode(["success" => false, "message" => "Invalid image format."]);
         exit;
     }
 
-    // Normalize JFIF to JPG
     $clean_ext  = ($ext === 'jfif') ? 'jpg' : $ext;
     $clean_mime = ($ext === 'jfif') ? 'image/jpeg' : $mime;
     $file_id    = 'profile_' . $userId . '_' . time();
@@ -57,7 +56,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($http_code === 200 && !empty($json_res['secure_url'])) {
         $cloud_url = $json_res['secure_url'];
 
-        // Upsert into user_profiles table
         $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
         $stmt_check->bind_param("i", $userId);
         $stmt_check->execute();
@@ -68,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $conn->prepare("UPDATE user_profiles SET profile_photo = ? WHERE user_id = ?");
             $stmt->bind_param("si", $cloud_url, $userId);
         } else {
-            $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo) VALUES (?, ?)");
+            $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) VALUES (?, ?, 'dark', '16px')");
             $stmt->bind_param("is", $userId, $cloud_url);
         }
 
@@ -78,14 +76,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "profile_photo" => $cloud_url
             ]);
         } else {
-            echo json_encode(["success" => false, "message" => "Database update failed: " . $conn->error]);
+            echo json_encode(["success" => false, "message" => "Database save failed: " . $conn->error]);
         }
         if ($stmt) $stmt->close();
     } else {
-        echo json_encode([
-            "success" => false, 
-            "message" => "Cloudinary upload failed: " . ($response ?: "HTTP $http_code")
-        ]);
+        echo json_encode(["success" => false, "message" => "Cloudinary rejected upload: " . ($response ?: "HTTP $http_code")]);
     }
 }
 $conn->close();
