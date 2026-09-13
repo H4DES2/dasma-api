@@ -1,13 +1,12 @@
 <?php
-if (!headers_sent()) {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
-}
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Origin, Accept");
+header("Access-Control-Max-Age: 86400");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
-    exit();
+    exit(0);
 }
 
 // ==========================================
@@ -69,8 +68,7 @@ define('CLIENT_ROLE', 'client');
 // ==========================================
 $conn = mysqli_init();
 
-// Fail fast after 4 seconds instead of freezing Flutter past its 15s timeout
-$conn->options(MYSQLI_OPT_CONNECT_TIMEOUT, 4);
+$conn->options(MYSQLI_OPT_CONNECT_TIMEOUT, 10);
 
 if (DB_PORT !== 3306) {
     // Cloud database with SSL (Aiven, Render, TiDB)
@@ -88,7 +86,9 @@ if (DB_PORT !== 3306) {
 if (!$connected) {
     $err = mysqli_connect_error();
     error_log("Database connection failed: " . $err);
+    header("Access-Control-Allow-Origin: *");
     header("Content-Type: application/json; charset=UTF-8");
+    http_response_code(500);
     die(json_encode([
         "status" => "error",
         "success" => false,
