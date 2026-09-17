@@ -57,9 +57,14 @@ $theme      = $_POST['theme'] ?? 'dark';
 $font_size  = $_POST['font_size'] ?? '16px';
 $is_online  = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
 
-$conn->begin_transaction();
 if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     $photo_url = trim($_POST['profile_photo'] ?? '');
+
+    if (empty($photo_url)) {
+        echo json_encode(["success" => false, "message" => "Photo URL is empty"]);
+        $conn->close();
+        exit();
+    }
 
     $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
     $stmt_check->bind_param("i", $user_id);
@@ -76,14 +81,29 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     }
 
     if ($stmt && $stmt->execute()) {
+        // Also update users table if profile_photo column exists there
+        try {
+            $stmt_u = $conn->prepare("UPDATE users SET profile_photo = ? WHERE id = ?");
+            if ($stmt_u) {
+                $stmt_u->bind_param("si", $photo_url, $user_id);
+                $stmt_u->execute();
+                $stmt_u->close();
+            }
+        } catch (Exception $e) {
+            // Ignored if column only exists on user_profiles
+        }
+
         echo json_encode(["success" => true, "message" => "Photo synced!"]);
     } else {
         echo json_encode(["success" => false, "message" => "Sync failed: " . $conn->error]);
     }
+
     if ($stmt) $stmt->close();
     $conn->close();
     exit();
 }
+
+$conn->begin_transaction();
 try {
     $stmt1 = $conn->prepare("UPDATE users SET is_online = ?, department = ?, barangay = ? WHERE id = ?");
     $stmt1->bind_param("issi", $is_online, $department, $barangay, $user_id);
