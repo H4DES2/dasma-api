@@ -2,7 +2,7 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-// --- DATABASE SPATIAL RESOLVER ---
+// Database Spatial Resolver
 function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fallback = 'Zone IV'): string {
     if ($lat == 0.0 || $lng == 0.0) return $fallback;
 
@@ -16,7 +16,6 @@ function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fal
 
     $stmt = $conn->prepare($sql);
     if ($stmt) {
-        // Point is POINT(Longitude, Latitude)
         $stmt->bind_param("dd", $lng, $lat);
         $stmt->execute();
         $res = $stmt->get_result();
@@ -29,15 +28,19 @@ function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fal
     return $fallback;
 }
 
-// 1. Collect Data 
+// 1. Collect and Validate Payload
 $raw_id        = $_POST['reported_by'] ?? $_POST['user_id'] ?? null;
 $user_id_int   = (is_numeric($raw_id)) ? (int)$raw_id : null; 
 $incident_type = $_POST['incident_type'] ?? 'General Emergency'; 
-
 $description   = isset($_POST['description']) ? trim($_POST['description']) : ''; 
 $latitude      = isset($_POST['latitude']) ? (float)$_POST['latitude'] : 0.0;
 $longitude     = isset($_POST['longitude']) ? (float)$_POST['longitude'] : 0.0;
 $raw_barangay  = $_POST['barangay'] ?? 'Unknown Location';
+
+if (!$user_id_int) {
+    echo json_encode(["success" => false, "message" => "Critical Error: No User ID provided."]);
+    exit();
+}
 
 // Strict Dasmariñas boundary perimeter
 $min_lat = 14.2750;
@@ -45,18 +48,18 @@ $max_lat = 14.3750;
 $min_lng = 120.9100;
 $max_lng = 121.0100;
 
-// Geofence check
 $outside_cities = ['general trias', 'gen. trias', 'gentri', 'imus', 'silang', 'tanza', 'bacoor', 'carmona', 'gma', 'trece martires'];
-$contains_outside_city = false;
-
 foreach ($outside_cities as $city) {
     if (stripos($raw_barangay, $city) !== false) {
-        $contains_outside_city = true;
-        break;
+        echo json_encode([
+            "success" => false,
+            "message" => "Reporting is restricted to the City of Dasmariñas jurisdiction only."
+        ]);
+        exit();
     }
 }
 
-if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng || $contains_outside_city) {
+if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng) {
     echo json_encode([
         "success" => false,
         "message" => "Reporting is restricted to the City of Dasmariñas jurisdiction only."
@@ -64,38 +67,55 @@ if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $lo
     exit();
 }
 
-// Execute Spatial Distance Lookup from MySQL
+// 2. Server-side Deduplication Guard (Prevents multi-click spam within 45s)
+$stmt_dup = $conn->prepare("
+    SELECT id FROM incidents 
+    WHERE reported_by = ? 
+      AND incident_type = ? 
+      AND created_at >= (NOW() - INTERVAL 45 SECOND)
+    LIMIT 1
+");
+$stmt_dup->bind_param("is", $user_id_int, $incident_type);
+$stmt_dup->execute();
+$dup_res = $stmt_dup->get_result();
+
+if ($dup_row = $dup_res->fetch_assoc()) {
+    $existing_id = $dup_row['id'];
+    $stmt_dup->close();
+    echo json_encode([
+        "success" => true,
+        "message" => "SOS already received. Units are on alert.",
+        "incident_id" => $existing_id,
+        "resolved_barangay" => $raw_barangay
+    ]);
+    $conn->close();
+    exit();
+}
+$stmt_dup->close();
+
+// Resolve Sector
 $barangay = resolveBarangaySector($conn, $latitude, $longitude, $raw_barangay);
+
+$severity_payload   = $_POST['severity'] ?? 'Minor';
+$allowed_severities = ['Critical', 'Major', 'Minor'];
+$severity = in_array($severity_payload, $allowed_severities) ? $severity_payload : 'Minor';
 
 $status        = 'active';
 $admin_remarks = null;
 $is_verified   = 0;    
 $image_path    = null;
 
-$severity_payload   = $_POST['severity'] ?? 'Minor';
-$allowed_severities = ['Critical', 'Major', 'Minor'];
-$severity = in_array($severity_payload, $allowed_severities) ? $severity_payload : 'Minor';
-
-if (!$user_id_int) {
-    echo json_encode(["success" => false, "message" => "Critical Error: No User ID provided."]);
-    exit();
-}
-
-// 2. Handle Image Upload via Cloudinary
+// 3. Handle Cloudinary Upload
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
-    // Read from getenv or $_ENV or hardcode fallback to test
     $cloud_name = getenv('CLOUDINARY_CLOUD_NAME') ?: ($_ENV['CLOUDINARY_CLOUD_NAME'] ?? 'wyxsiraw');
     $api_key    = getenv('CLOUDINARY_API_KEY') ?: ($_ENV['CLOUDINARY_API_KEY'] ?? null);
     $api_secret = getenv('CLOUDINARY_API_SECRET') ?: ($_ENV['CLOUDINARY_API_SECRET'] ?? null);
 
-    // If still getting the wrong name, force the correct one:
     if ($cloud_name === 'dasma-api') {
         $cloud_name = 'wyxsiraw';
     }
 
-    if (!$cloud_name || !$api_key || !$api_secret) {
-        error_log("[CLOUDINARY ERROR] Missing environment credentials.");
-    } else {
+    if ($cloud_name && $api_key && $api_secret) {
         $file_tmp   = $_FILES['evidence_photo']['tmp_name'];
         $file_mime  = mime_content_type($file_tmp);
         $file_name  = $_FILES['evidence_photo']['name'];
@@ -128,6 +148,7 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
         curl_setopt($ch, CURLOPT_POSTFIELDS, $post_fields);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
         $response  = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -136,14 +157,11 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
         $json_res = json_decode($response, true);
         if ($http_code === 200 && !empty($json_res['secure_url'])) {
             $image_path = $json_res['secure_url'];
-        } else {
-            error_log("[CLOUDINARY UPLOAD FAILED] HTTP {$http_code}: " . ($response ?: 'No response'));
         }
     }
 }
 
-// 3. Database Execution
-/** @var mysqli $conn */
+// 4. Database Transaction
 $conn->begin_transaction(); 
 
 try {
@@ -167,7 +185,12 @@ try {
     }
 
     $conn->commit(); 
-    echo json_encode(["success" => true, "message" => "SOS Transmitted successfully!", "resolved_barangay" => $barangay]);
+    echo json_encode([
+        "success" => true,
+        "message" => "SOS Transmitted successfully!",
+        "incident_id" => $new_incident_id,
+        "resolved_barangay" => $barangay
+    ]);
 
 } catch (Exception $e) {
     $conn->rollback(); 
