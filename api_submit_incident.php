@@ -4,6 +4,10 @@ header("Content-Type: application/json; charset=UTF-8");
 
 // Database Spatial Resolver
 function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fallback = 'Zone IV'): string {
+    if (strcasecmp(trim($fallback), 'Burol Main') === 0) {
+        $fallback = 'Burol';
+    }
+
     if ($lat == 0.0 || $lng == 0.0) return $fallback;
 
     $sql = "
@@ -21,7 +25,8 @@ function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fal
         $res = $stmt->get_result();
         if ($row = $res->fetch_assoc()) {
             $stmt->close();
-            return $row['name'];
+            $sector = trim($row['name']);
+            return (strcasecmp($sector, 'Burol Main') === 0) ? 'Burol' : $sector;
         }
         $stmt->close();
     }
