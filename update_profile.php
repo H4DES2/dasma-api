@@ -10,18 +10,32 @@ if (!$user_id) {
     exit();
 }
 
-// Handle Manage Profile (Phone Number & Password Change)
+// 1. Handle Manage Profile (Phone Number & Password Change)
 if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
-    $phone       = $_POST['phone_number'] ?? '';
+    $phone       = $_POST['phone_number'] ?? null;
     $current_pwd = $_POST['current_password'] ?? '';
     $new_pwd     = $_POST['new_password'] ?? '';
 
-    $stmt_phone = $conn->prepare("UPDATE user_profiles SET phone_number = ? WHERE user_id = ?");
-    $stmt_phone->bind_param("si", $phone, $user_id);
-    $stmt_phone->execute();
-    $stmt_phone->close();
+    // Upsert phone number into user_profiles
+    if ($phone !== null) {
+        $stmt_phone = $conn->prepare("
+            INSERT INTO user_profiles (user_id, phone_number, theme, font_size) 
+            VALUES (?, ?, 'dark', '16px')
+            ON DUPLICATE KEY UPDATE phone_number = VALUES(phone_number)
+        ");
+        $stmt_phone->bind_param("is", $user_id, $phone);
+        $stmt_phone->execute();
+        $stmt_phone->close();
+    }
 
-    if (!empty($current_pwd) && !empty($new_pwd)) {
+    // Password validation
+    if (!empty($new_pwd)) {
+        if (empty($current_pwd)) {
+            echo json_encode(["success" => false, "message" => "Current password is required to set a new password."]);
+            $conn->close();
+            exit();
+        }
+
         $stmt_pwd = $conn->prepare("SELECT password FROM users WHERE id = ?");
         $stmt_pwd->bind_param("i", $user_id);
         $stmt_pwd->execute();
@@ -30,7 +44,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
 
         if ($user && password_verify($current_pwd, $user['password'])) {
             $hashed_pwd = password_hash($new_pwd, PASSWORD_DEFAULT);
-            
             $stmt_upd = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
             $stmt_upd->bind_param("si", $hashed_pwd, $user_id);
             $stmt_upd->execute();
@@ -51,12 +64,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     exit();
 }
 
-$department = $_POST['department'] ?? '';
-$barangay   = $_POST['barangay'] ?? '';
-$theme      = $_POST['theme'] ?? 'dark';
-$font_size  = $_POST['font_size'] ?? '16px';
-$is_online  = isset($_POST['is_online']) ? (int)$_POST['is_online'] : 0;
-
+// 2. Handle Profile Photo Sync
 if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     $photo_url = trim($_POST['profile_photo'] ?? '');
 
@@ -66,22 +74,14 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
         exit();
     }
 
-    $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
-    $stmt_check->bind_param("i", $user_id);
-    $stmt_check->execute();
-    $exists = ($stmt_check->get_result()->num_rows > 0);
-    $stmt_check->close();
+    $stmt = $conn->prepare("
+        INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) 
+        VALUES (?, ?, 'dark', '16px')
+        ON DUPLICATE KEY UPDATE profile_photo = VALUES(profile_photo)
+    ");
+    $stmt->bind_param("is", $user_id, $photo_url);
 
-    if ($exists) {
-        $stmt = $conn->prepare("UPDATE user_profiles SET profile_photo = ? WHERE user_id = ?");
-        $stmt->bind_param("si", $photo_url, $user_id);
-    } else {
-        $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) VALUES (?, ?, 'dark', '16px')");
-        $stmt->bind_param("is", $user_id, $photo_url);
-    }
-
-    if ($stmt && $stmt->execute()) {
-        // Also update users table if profile_photo column exists there
+    if ($stmt->execute()) {
         try {
             $stmt_u = $conn->prepare("UPDATE users SET profile_photo = ? WHERE id = ?");
             if ($stmt_u) {
@@ -90,7 +90,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
                 $stmt_u->close();
             }
         } catch (Exception $e) {
-            // Ignored if column only exists on user_profiles
+            // Optional users column fallback
         }
 
         echo json_encode(["success" => true, "message" => "Photo synced!"]);
@@ -98,37 +98,73 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
         echo json_encode(["success" => false, "message" => "Sync failed: " . $conn->error]);
     }
 
-    if ($stmt) $stmt->close();
+    $stmt->close();
     $conn->close();
     exit();
 }
 
+// 3. Dynamic Partial Settings Update (Theme, Font Size, Barangay, Online State)
 $conn->begin_transaction();
 try {
-    $stmt1 = $conn->prepare("UPDATE users SET is_online = ?, department = ?, barangay = ? WHERE id = ?");
-    $stmt1->bind_param("issi", $is_online, $department, $barangay, $user_id);
-    if (!$stmt1->execute()) {
-        throw new Exception("Users update failed: " . $stmt1->error);
-    }
-    $stmt1->close();
+    // A. Update users table only for provided values
+    $user_updates = [];
+    $user_types = "";
+    $user_params = [];
 
-    $stmt_check = $conn->prepare("SELECT id FROM user_profiles WHERE user_id = ?");
-    $stmt_check->bind_param("i", $user_id);
-    $stmt_check->execute();
-    $check_result = $stmt_check->get_result();
-    $has_profile = $check_result && $check_result->num_rows > 0;
-    $stmt_check->close();
-    
-    if ($has_profile) {
-        $stmt2 = $conn->prepare("UPDATE user_profiles SET theme = ?, font_size = ? WHERE user_id = ?");
-        $stmt2->bind_param("ssi", $theme, $font_size, $user_id);
-        if (!$stmt2->execute()) throw new Exception("Profile update failed: " . $stmt2->error);
+    if (isset($_POST['is_online'])) {
+        $user_updates[] = "is_online = ?";
+        $user_types .= "i";
+        $user_params[] = (int)$_POST['is_online'];
+    }
+    if (isset($_POST['department'])) {
+        $user_updates[] = "department = ?";
+        $user_types .= "s";
+        $user_params[] = trim($_POST['department']);
+    }
+    if (isset($_POST['barangay'])) {
+        $user_updates[] = "barangay = ?";
+        $user_types .= "s";
+        $user_params[] = trim($_POST['barangay']);
+    }
+
+    if (!empty($user_updates)) {
+        $sql1 = "UPDATE users SET " . implode(", ", $user_updates) . " WHERE id = ?";
+        $user_types .= "i";
+        $user_params[] = $user_id;
+
+        $stmt1 = $conn->prepare($sql1);
+        $stmt1->bind_param($user_types, ...$user_params);
+        if (!$stmt1->execute()) {
+            throw new Exception("Users update failed: " . $stmt1->error);
+        }
+        $stmt1->close();
+    }
+
+    // B. Upsert preferences into user_profiles only for provided values
+    $theme     = $_POST['theme'] ?? null;
+    $font_size = $_POST['font_size'] ?? null;
+
+    if ($theme !== null || $font_size !== null) {
+        $stmt_check = $conn->prepare("SELECT theme, font_size FROM user_profiles WHERE user_id = ?");
+        $stmt_check->bind_param("i", $user_id);
+        $stmt_check->execute();
+        $prof_res = $stmt_check->get_result();
+        $existing = $prof_res->fetch_assoc();
+        $stmt_check->close();
+
+        $final_theme = $theme ?? ($existing['theme'] ?? 'dark');
+        $final_font  = $font_size ?? ($existing['font_size'] ?? '16px');
+
+        $stmt2 = $conn->prepare("
+            INSERT INTO user_profiles (user_id, theme, font_size) 
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE theme = VALUES(theme), font_size = VALUES(font_size)
+        ");
+        $stmt2->bind_param("iss", $user_id, $final_theme, $final_font);
+        if (!$stmt2->execute()) {
+            throw new Exception("Profile preference update failed: " . $stmt2->error);
+        }
         $stmt2->close();
-    } else {
-        $stmt3 = $conn->prepare("INSERT INTO user_profiles (user_id, theme, font_size, profile_photo, phone_number, radio_callsign, position) VALUES (?, ?, ?, '', '', '', '')");
-        $stmt3->bind_param("iss", $user_id, $theme, $font_size);
-        if (!$stmt3->execute()) throw new Exception("Profile insert failed: " . $stmt3->error);
-        $stmt3->close();
     }
 
     $conn->commit();
