@@ -122,24 +122,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     }
 
-    // TAB 3: REQUEST BACKUP FORM
+    // TAB 3: REQUEST BACKUP FORM (Directs to Barangay Admin First)
     if ($action === 'request_backup') {
         $backup_type  = $_POST['backup_type'] ?? 'Unknown';
         $backup_count = $_POST['backup_count'] ?? '1 Unit';
         $situation    = $_POST['situation'] ?? '';
-        
-        $stmt1 = $conn->prepare("UPDATE incidents SET backup_requested = 1 WHERE id = ?");
+
+        // Fetch the incident's barangay to ensure local scoping
+        $stmt_brgy = $conn->prepare("SELECT barangay FROM incidents WHERE id = ?");
+        $stmt_brgy->bind_param("i", $incident_id);
+        $stmt_brgy->execute();
+        $brgy_res = $stmt_brgy->get_result()->fetch_assoc();
+        $incident_brgy = $brgy_res['barangay'] ?? 'Unknown';
+        $stmt_brgy->close();
+
+        // 1. Mark as pending at the Barangay Level, NOT Superadmin
+        $stmt1 = $conn->prepare("
+            UPDATE incidents 
+            SET backup_requested = 1,
+                backup_target = 'barangay',
+                backup_status = 'pending_barangay'
+            WHERE id = ?
+        ");
         $stmt1->bind_param("i", $incident_id);
         $stmt1->execute();
         $stmt1->close();
-        
-        $log_message = "🚨 URGENT BACKUP: Needs $backup_count of $backup_type. Situation: $situation";
+
+        // 2. Audit log specifying request was routed to Barangay Admin
+        $log_message = "🚨 BACKUP REQUEST (To Barangay Admin - {$incident_brgy}): Unit [$team_name] requested $backup_count of $backup_type. Situation: $situation";
         $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
         $stmt2->bind_param("iis", $incident_id, $user_id, $log_message);
         $stmt2->execute();
         $stmt2->close();
-        
-        echo json_encode(['success' => true]); 
+
+        echo json_encode([
+            'success' => true,
+            'message' => "Backup request routed to Barangay {$incident_brgy} Admin."
+        ]);
         $conn->close();
         exit();
     }
