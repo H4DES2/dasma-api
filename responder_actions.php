@@ -1,4 +1,7 @@
 <?php
+error_reporting(0);
+ini_set('display_errors', '0');
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -9,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require_once 'config.php'; 
+require_once 'config.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action      = $_POST['action'] ?? '';
@@ -21,166 +24,168 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     }
 
-    $team_stmt = $conn->prepare("SELECT department FROM users WHERE id = ?");
-    $team_stmt->bind_param("i", $user_id);
-    $team_stmt->execute();
-    $team_data = $team_stmt->get_result()->fetch_assoc();
-    $team_name = $team_data['department'] ?? '';
-    $team_stmt->close();
+    try {
+        $team_stmt = $conn->prepare("SELECT department FROM users WHERE id = ?");
+        $team_stmt->bind_param("i", $user_id);
+        $team_stmt->execute();
+        $team_data = $team_stmt->get_result()->fetch_assoc();
+        $team_name = $team_data['department'] ?? 'Responder';
+        $team_stmt->close();
 
-    // TAB 1: SUBMIT NEW INCIDENT / REQUEST BACKUP FROM FIELD
-    if ($action === 'submit_new_report') {
-        $type    = $_POST['incident_type'] ?? 'General Emergency';
-        $sev     = $_POST['severity'] ?? 'Minor';
-        $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : 0.0;
-        $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : 0.0;
-        $remarks = $_POST['remarks'] ?? '';
-        $backup  = isset($_POST['request_backup']) ? (int)$_POST['request_backup'] : 0;
+        // TAB 1: SUBMIT NEW INCIDENT
+        if ($action === 'submit_new_report') {
+            $type    = $_POST['incident_type'] ?? 'General Emergency';
+            $sev     = $_POST['severity'] ?? 'Minor';
+            $lat     = isset($_POST['lat']) ? (float)$_POST['lat'] : 0.0;
+            $lng     = isset($_POST['lng']) ? (float)$_POST['lng'] : 0.0;
+            $remarks = $_POST['remarks'] ?? '';
+            $backup  = isset($_POST['request_backup']) ? (int)$_POST['request_backup'] : 0;
 
-        $stmt = $conn->prepare("INSERT INTO incidents (reported_by, incident_type, severity, latitude, longitude, status, backup_requested, barangay, assigned_to) VALUES (?, ?, ?, ?, ?, 'on-scene', ?, 'Coordinates Logged', ?)");
-        $stmt->bind_param("issddis", $user_id, $type, $sev, $lat, $lng, $backup, $team_name);
-        
-        if ($stmt->execute()) {
-            $new_id = $stmt->insert_id;
-            $stmt->close();
+            $stmt = $conn->prepare("INSERT INTO incidents (reported_by, incident_type, severity, latitude, longitude, status, backup_requested, barangay, assigned_to) VALUES (?, ?, ?, ?, ?, 'on-scene', ?, 'Coordinates Logged', ?)");
+            $stmt->bind_param("issddis", $user_id, $type, $sev, $lat, $lng, $backup, $team_name);
+            
+            if ($stmt->execute()) {
+                $new_id = $stmt->insert_id;
+                $stmt->close();
 
-            $stmt_team = $conn->prepare("UPDATE response_teams SET current_incident_id = ?, status = 'on-scene' WHERE team_name = ?");
-            $stmt_team->bind_param("is", $new_id, $team_name);
-            $stmt_team->execute();
-            $stmt_team->close();
+                $stmt_team = $conn->prepare("UPDATE response_teams SET current_incident_id = ?, status = 'on-scene' WHERE team_name = ?");
+                $stmt_team->bind_param("is", $new_id, $team_name);
+                $stmt_team->execute();
+                $stmt_team->close();
 
-            $log = $backup === 1 ? "🚨 URGENT BACKUP REQUESTED by [$team_name]. Remarks: $remarks" : "Field Report by Unit [$team_name]: $remarks";
-            $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
-            $stmt2->bind_param("iis", $new_id, $user_id, $log);
-            $stmt2->execute();
-            $stmt2->close();
+                $log = $backup === 1 ? "🚨 URGENT BACKUP REQUESTED by [$team_name]. Remarks: $remarks" : "Field Report by Unit [$team_name]: $remarks";
+                $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
+                $stmt2->bind_param("iis", $new_id, $user_id, $log);
+                $stmt2->execute();
+                $stmt2->close();
 
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => $conn->error]);
-        }
-        $conn->close();
-        exit();
-    }
-
-    // TAB 2: ACTION BUTTON UPDATES
-    if ($action === 'submit_status_update') {
-        $new_status = $_POST['status'] ?? '';
-        $remarks    = $_POST['remarks'] ?? '';
-
-        $target_status = 'dispatched';
-        $log_action_text = '';
-
-        $normalized_status = strtolower(trim($new_status));
-        if ($normalized_status === 'en route' || $normalized_status === 'en_route') {
-            $target_status = 'en route';
-            $log_action_text = 'EN ROUTE';
-        } elseif ($normalized_status === 'on scene' || $normalized_status === 'on-scene') {
-            $target_status = 'on-scene';
-            $log_action_text = 'ON SCENE';
-        } elseif ($normalized_status === 'resolved') {
-            $target_status = 'archived';
-            $log_action_text = 'RESOLVED';
-        }
-
-        if ($target_status === 'archived') {
-            $stmt_inc = $conn->prepare("UPDATE incidents SET status = 'archived' WHERE id = ?");
-            $stmt_inc->bind_param("i", $incident_id);
-            $stmt_inc->execute();
-            $stmt_inc->close();
-
-            $stmt_t = $conn->prepare("UPDATE response_teams SET status = 'available', current_incident_id = NULL WHERE current_incident_id = ?");
-            $stmt_t->bind_param("i", $incident_id);
-            $stmt_t->execute();
-            $stmt_t->close();
-
-            $log_msg = "Unit [$team_name] RESOLVED the incident. Remarks: $remarks";
-        } else {
-            $stmt_inc = $conn->prepare("UPDATE incidents SET status = ? WHERE id = ?");
-            $stmt_inc->bind_param("si", $target_status, $incident_id);
-            $stmt_inc->execute();
-            $stmt_inc->close();
-
-            $stmt_t = $conn->prepare("UPDATE response_teams SET status = ? WHERE current_incident_id = ? AND team_name = ?");
-            $stmt_t->bind_param("sis", $target_status, $incident_id, $team_name);
-            $stmt_t->execute();
-            $stmt_t->close();
-
-            $log_msg = "Unit [$team_name] status updated to $log_action_text. Remarks: $remarks";
-        }
-
-        $stmt_log = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
-        $stmt_log->bind_param("iis", $incident_id, $user_id, $log_msg);
-        
-        if ($stmt_log->execute()) {
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => $conn->error]);
-        }
-        $stmt_log->close();
-        $conn->close();
-        exit();
-    }
-
-    // TAB 3: REQUEST BACKUP FORM (Directs to Barangay Admin First)
-    if ($action === 'request_backup') {
-        $backup_type  = $_POST['backup_type'] ?? 'Unknown';
-        $backup_count = $_POST['backup_count'] ?? '1 Unit';
-        $situation    = $_POST['situation'] ?? '';
-
-        if ($incident_id <= 0) {
-            echo json_encode(['success' => false, 'message' => 'Invalid incident ID']);
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'message' => $conn->error]);
+            }
+            $conn->close();
             exit();
         }
 
-        // Fetch the incident's barangay
-        $stmt_brgy = $conn->prepare("SELECT barangay FROM incidents WHERE id = ?");
-        $stmt_brgy->bind_param("i", $incident_id);
-        $stmt_brgy->execute();
-        $brgy_res = $stmt_brgy->get_result()->fetch_assoc();
-        $incident_brgy = $brgy_res['barangay'] ?? 'Unknown';
-        $stmt_brgy->close();
+        // TAB 2: ACTION BUTTON UPDATES
+        if ($action === 'submit_status_update') {
+            $new_status = $_POST['status'] ?? '';
+            $remarks    = $_POST['remarks'] ?? '';
 
-        // Update incident status
-        $stmt1 = $conn->prepare("
-            UPDATE incidents 
-            SET backup_requested = 1,
-                backup_target = 'barangay',
-                backup_status = 'pending_barangay'
-            WHERE id = ?
-        ");
+            $target_status = 'dispatched';
+            $log_action_text = '';
 
-        if (!$stmt1) {
-            echo json_encode(['success' => false, 'message' => 'DB Prepare Error: ' . $conn->error]);
+            $normalized_status = strtolower(trim($new_status));
+            if ($normalized_status === 'en route' || $normalized_status === 'en_route') {
+                $target_status = 'en route';
+                $log_action_text = 'EN ROUTE';
+            } elseif ($normalized_status === 'on scene' || $normalized_status === 'on-scene') {
+                $target_status = 'on-scene';
+                $log_action_text = 'ON SCENE';
+            } elseif ($normalized_status === 'resolved') {
+                $target_status = 'archived';
+                $log_action_text = 'RESOLVED';
+            }
+
+            if ($target_status === 'archived') {
+                $stmt_inc = $conn->prepare("UPDATE incidents SET status = 'archived' WHERE id = ?");
+                $stmt_inc->bind_param("i", $incident_id);
+                $stmt_inc->execute();
+                $stmt_inc->close();
+
+                $stmt_t = $conn->prepare("UPDATE response_teams SET status = 'available', current_incident_id = NULL WHERE current_incident_id = ?");
+                $stmt_t->bind_param("i", $incident_id);
+                $stmt_t->execute();
+                $stmt_t->close();
+
+                $log_msg = "Unit [$team_name] RESOLVED the incident. Remarks: $remarks";
+            } else {
+                $stmt_inc = $conn->prepare("UPDATE incidents SET status = ? WHERE id = ?");
+                $stmt_inc->bind_param("si", $target_status, $incident_id);
+                $stmt_inc->execute();
+                $stmt_inc->close();
+
+                $stmt_t = $conn->prepare("UPDATE response_teams SET status = ? WHERE current_incident_id = ? AND team_name = ?");
+                $stmt_t->bind_param("sis", $target_status, $incident_id, $team_name);
+                $stmt_t->execute();
+                $stmt_t->close();
+
+                $log_msg = "Unit [$team_name] status updated to $log_action_text. Remarks: $remarks";
+            }
+
+            $stmt_log = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
+            $stmt_log->bind_param("iis", $incident_id, $user_id, $log_msg);
+            
+            if ($stmt_log->execute()) {
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'message' => $conn->error]);
+            }
+            $stmt_log->close();
+            $conn->close();
             exit();
         }
 
-        $stmt1->bind_param("i", $incident_id);
-        if (!$stmt1->execute()) {
-            echo json_encode(['success' => false, 'message' => 'DB Execute Error: ' . $stmt1->error]);
+        // TAB 3: REQUEST BACKUP (Barangay Level)
+        if ($action === 'request_backup') {
+            $backup_type  = $_POST['backup_type'] ?? 'Unknown';
+            $backup_count = $_POST['backup_count'] ?? '1 Unit';
+            $situation    = $_POST['situation'] ?? '';
+
+            if ($incident_id <= 0) {
+                echo json_encode(['success' => false, 'message' => 'Invalid incident ID']);
+                exit();
+            }
+
+            $stmt_brgy = $conn->prepare("SELECT barangay FROM incidents WHERE id = ?");
+            $stmt_brgy->bind_param("i", $incident_id);
+            $stmt_brgy->execute();
+            $brgy_res = $stmt_brgy->get_result()->fetch_assoc();
+            $incident_brgy = $brgy_res['barangay'] ?? 'Unknown';
+            $stmt_brgy->close();
+
+            $stmt1 = $conn->prepare("
+                UPDATE incidents 
+                SET backup_requested = 1,
+                    backup_target = 'barangay',
+                    backup_status = 'pending_barangay'
+                WHERE id = ?
+            ");
+
+            if (!$stmt1) {
+                echo json_encode(['success' => false, 'message' => 'DB Prepare Error: ' . $conn->error]);
+                exit();
+            }
+
+            $stmt1->bind_param("i", $incident_id);
+            if (!$stmt1->execute()) {
+                echo json_encode(['success' => false, 'message' => 'DB Execute Error: ' . $stmt1->error]);
+                $stmt1->close();
+                exit();
+            }
             $stmt1->close();
+
+            $log_message = "🚨 BACKUP REQUEST (To Barangay Admin - {$incident_brgy}): Unit [$team_name] requested $backup_count of $backup_type. Situation: $situation";
+            $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
+            if ($stmt2) {
+                $stmt2->bind_param("iis", $incident_id, $user_id, $log_message);
+                $stmt2->execute();
+                $stmt2->close();
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => "Backup request routed to Barangay {$incident_brgy} Admin."
+            ]);
+            $conn->close();
             exit();
         }
-        $stmt1->close();
 
-        // Audit log entry
-        $log_message = "🚨 BACKUP REQUEST (To Barangay Admin - {$incident_brgy}): Unit [$team_name] requested $backup_count of $backup_type. Situation: $situation";
-        $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
-        if ($stmt2) {
-            $stmt2->bind_param("iis", $incident_id, $user_id, $log_message);
-            $stmt2->execute();
-            $stmt2->close();
-        }
+        echo json_encode(['success' => false, 'message' => 'Unknown action']);
 
-        echo json_encode([
-            'success' => true,
-            'message' => "Backup request routed to Barangay {$incident_brgy} Admin."
-        ]);
-        $conn->close();
-        exit();
+    } catch (Throwable $e) {
+        echo json_encode(['success' => false, 'message' => 'Server Error: ' . $e->getMessage()]);
     }
-
-    echo json_encode(['success' => false, 'message' => 'Unknown action']);
 }
 
 $conn->close();
