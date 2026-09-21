@@ -40,29 +40,24 @@ $incident_type = $_POST['incident_type'] ?? 'General Emergency';
 $description   = isset($_POST['description']) ? trim($_POST['description']) : ''; 
 $latitude      = isset($_POST['latitude']) ? (float)$_POST['latitude'] : 0.0;
 $longitude     = isset($_POST['longitude']) ? (float)$_POST['longitude'] : 0.0;
-$raw_barangay  = $_POST['barangay'] ?? 'Unknown Location';
+$raw_barangay  = $_POST['barangay'] ?? 'City of Dasmariñas';
+
+// Optional Detailed Address Inputs
+$block         = isset($_POST['block']) && trim($_POST['block']) !== '' ? trim($_POST['block']) : null;
+$lot           = isset($_POST['lot']) && trim($_POST['lot']) !== '' ? trim($_POST['lot']) : null;
+$phase         = isset($_POST['phase']) && trim($_POST['phase']) !== '' ? trim($_POST['phase']) : null;
+$subdivision   = isset($_POST['subdivision']) && trim($_POST['subdivision']) !== '' ? trim($_POST['subdivision']) : null;
 
 if (!$user_id_int) {
     echo json_encode(["success" => false, "message" => "Critical Error: No User ID provided."]);
     exit();
 }
 
-// Strict Dasmariñas boundary perimeter
-$min_lat = 14.2750;
-$max_lat = 14.3750;
-$min_lng = 120.9100;
-$max_lng = 121.0100;
-
-$outside_cities = ['general trias', 'gen. trias', 'gentri', 'imus', 'silang', 'tanza', 'bacoor', 'carmona', 'gma', 'trece martires'];
-foreach ($outside_cities as $city) {
-    if (stripos($raw_barangay, $city) !== false) {
-        echo json_encode([
-            "success" => false,
-            "message" => "Reporting is restricted to the City of Dasmariñas jurisdiction only."
-        ]);
-        exit();
-    }
-}
+// Coordinate sanity boundary for Dasmariñas
+$min_lat = 14.2400;
+$max_lat = 14.3850;
+$min_lng = 120.9000;
+$max_lng = 121.0300;
 
 if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng) {
     echo json_encode([
@@ -72,12 +67,12 @@ if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $lo
     exit();
 }
 
-// 2. Server-side Deduplication Guard (Prevents multi-click spam within 45s)
+// 2. Server-side Deduplication Guard
 $stmt_dup = $conn->prepare("
     SELECT id FROM incidents 
     WHERE reported_by = ? 
       AND incident_type = ? 
-      AND created_at >= (NOW() - INTERVAL 45 SECOND)
+      AND created_at >= (NOW() - INTERVAL 30 SECOND)
     LIMIT 1
 ");
 $stmt_dup->bind_param("is", $user_id_int, $incident_type);
@@ -98,7 +93,6 @@ if ($dup_row = $dup_res->fetch_assoc()) {
 }
 $stmt_dup->close();
 
-// Resolve Sector
 $barangay = resolveBarangaySector($conn, $latitude, $longitude, $raw_barangay);
 
 $severity_payload   = $_POST['severity'] ?? 'Minor';
@@ -166,24 +160,57 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
     }
 }
 
-// 4. Database Transaction
+// 4. Database Insertion with Optional Address Fields
 $conn->begin_transaction(); 
 
 try {
-    $sql_inc = "INSERT INTO incidents (client_id, barangay, incident_type, severity, latitude, longitude, status, reported_by, is_verified, image_path, admin_remarks) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    $sql_inc = "INSERT INTO incidents 
+                (client_id, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, status, reported_by, is_verified, image_path, admin_remarks) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
     $stmt_inc = $conn->prepare($sql_inc);
-    $stmt_inc->bind_param("isssddsiiss", $user_id_int, $barangay, $incident_type, $severity, $latitude, $longitude, $status, $user_id_int, $is_verified, $image_path, $admin_remarks);
+    $stmt_inc->bind_param(
+        "isssssssddsiiss",
+        $user_id_int,
+        $barangay,
+        $block,
+        $lot,
+        $phase,
+        $subdivision,
+        $incident_type,
+        $severity,
+        $latitude,
+        $longitude,
+        $status,
+        $user_id_int,
+        $is_verified,
+        $image_path,
+        $admin_remarks
+    );
     $stmt_inc->execute();
     
     $new_incident_id = $conn->insert_id;
     $stmt_inc->close();
 
+    // Compile log entry
+    $address_details = [];
+    if ($subdivision) $address_details[] = "Subd: $subdivision";
+    if ($phase)       $address_details[] = "Phase: $phase";
+    if ($block)       $address_details[] = "Blk: $block";
+    if ($lot)         $address_details[] = "Lot: $lot";
+
+    $full_log = [];
+    if (!empty($address_details)) {
+        $full_log[] = "[" . implode(", ", $address_details) . "]";
+    }
     if (!empty($description)) {
+        $full_log[] = $description;
+    }
+
+    if (!empty($full_log)) {
         $sql_log = "INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)";
         $stmt_log = $conn->prepare($sql_log);
-        $formatted_log = "REPORTER LOG: " . $description;
+        $formatted_log = "REPORTER LOG: " . implode(" - ", $full_log);
         $stmt_log->bind_param("iis", $new_incident_id, $user_id_int, $formatted_log);
         $stmt_log->execute();
         $stmt_log->close();
