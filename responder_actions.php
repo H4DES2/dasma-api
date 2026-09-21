@@ -128,7 +128,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $backup_count = $_POST['backup_count'] ?? '1 Unit';
         $situation    = $_POST['situation'] ?? '';
 
-        // Fetch the incident's barangay to ensure local scoping
+        if ($incident_id <= 0) {
+            echo json_encode(['success' => false, 'message' => 'Invalid incident ID']);
+            exit();
+        }
+
+        // Fetch the incident's barangay
         $stmt_brgy = $conn->prepare("SELECT barangay FROM incidents WHERE id = ?");
         $stmt_brgy->bind_param("i", $incident_id);
         $stmt_brgy->execute();
@@ -136,7 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $incident_brgy = $brgy_res['barangay'] ?? 'Unknown';
         $stmt_brgy->close();
 
-        // 1. Mark as pending at the Barangay Level, NOT Superadmin
+        // Update incident status
         $stmt1 = $conn->prepare("
             UPDATE incidents 
             SET backup_requested = 1,
@@ -144,16 +149,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 backup_status = 'pending_barangay'
             WHERE id = ?
         ");
+
+        if (!$stmt1) {
+            echo json_encode(['success' => false, 'message' => 'DB Prepare Error: ' . $conn->error]);
+            exit();
+        }
+
         $stmt1->bind_param("i", $incident_id);
-        $stmt1->execute();
+        if (!$stmt1->execute()) {
+            echo json_encode(['success' => false, 'message' => 'DB Execute Error: ' . $stmt1->error]);
+            $stmt1->close();
+            exit();
+        }
         $stmt1->close();
 
-        // 2. Audit log specifying request was routed to Barangay Admin
+        // Audit log entry
         $log_message = "🚨 BACKUP REQUEST (To Barangay Admin - {$incident_brgy}): Unit [$team_name] requested $backup_count of $backup_type. Situation: $situation";
         $stmt2 = $conn->prepare("INSERT INTO incident_logs (incident_id, user_id, log_message) VALUES (?, ?, ?)");
-        $stmt2->bind_param("iis", $incident_id, $user_id, $log_message);
-        $stmt2->execute();
-        $stmt2->close();
+        if ($stmt2) {
+            $stmt2->bind_param("iis", $incident_id, $user_id, $log_message);
+            $stmt2->execute();
+            $stmt2->close();
+        }
 
         echo json_encode([
             'success' => true,
