@@ -93,16 +93,16 @@ $lot           = isset($_POST['lot']) && trim($_POST['lot']) !== '' ? trim($_POS
 $phase         = isset($_POST['phase']) && trim($_POST['phase']) !== '' ? trim($_POST['phase']) : null;
 $subdivision   = isset($_POST['subdivision']) && trim($_POST['subdivision']) !== '' ? trim($_POST['subdivision']) : null;
 
-// Coordinate sanity boundary for Luzon Region
-$min_lat = 12.0000;
-$max_lat = 21.2000;
-$min_lng = 119.5000;
-$max_lng = 124.5000;
+// Coordinate sanity boundary for Dasmariñas City Jurisdiction
+$min_lat = 14.2600;
+$max_lat = 14.3750;
+$min_lng = 120.9100;
+$max_lng = 121.0100;
 
 if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng) {
     echo json_encode([
         "success" => false,
-        "message" => "Reporting is restricted to Luzon jurisdiction only."
+        "message" => "Reporting is restricted to Dasmariñas City jurisdiction only."
     ]);
     exit();
 }
