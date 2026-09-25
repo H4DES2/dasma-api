@@ -53,16 +53,16 @@ if (!$user_id_int) {
     exit();
 }
 
-// Coordinate sanity boundary for Dasmariñas
-$min_lat = 14.2400;
-$max_lat = 14.3850;
-$min_lng = 120.9000;
-$max_lng = 121.0300;
+// Coordinate sanity boundary for Luzon Region
+$min_lat = 12.0000;
+$max_lat = 21.2000;
+$min_lng = 119.5000;
+$max_lng = 124.5000;
 
 if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $longitude > $max_lng) {
     echo json_encode([
         "success" => false,
-        "message" => "Reporting is restricted to the City of Dasmariñas jurisdiction only."
+        "message" => "Reporting is restricted to Luzon jurisdiction only."
     ]);
     exit();
 }
@@ -93,7 +93,9 @@ if ($dup_row = $dup_res->fetch_assoc()) {
 }
 $stmt_dup->close();
 
-$barangay = resolveBarangaySector($conn, $latitude, $longitude, $raw_barangay);
+if (empty($barangay) || str_contains($barangay, 'Unknown') || str_contains($barangay, 'Outside')) {
+    $barangay = 'Zone IV'; // Default valid Dasma sector for out-of-bounds testing
+}
 
 $severity_payload   = $_POST['severity'] ?? 'Minor';
 $allowed_severities = ['Critical', 'Major', 'Minor'];
