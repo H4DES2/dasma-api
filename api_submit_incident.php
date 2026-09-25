@@ -2,30 +2,96 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-// 1. Collect and Validate Payload
-$raw_id        = $_POST['reported_by'] ?? $_POST['user_id'] ?? null;
-$user_id_int   = (is_numeric($raw_id)) ? (int)$raw_id : null; 
-$incident_type = $_POST['incident_type'] ?? 'General Emergency'; 
-$description   = isset($_POST['description']) ? trim($_POST['description']) : ''; 
+// Auto-create API rate limiting table if missing
+$conn->query("CREATE TABLE IF NOT EXISTS api_rate_limits (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    identifier VARCHAR(64) NOT NULL,
+    identifier_type ENUM('ip', 'user') NOT NULL,
+    endpoint VARCHAR(50) NOT NULL,
+    request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_rate_lookup (identifier, identifier_type, endpoint, request_time)
+)");
+
+// 1. Identify Client IP & Extract User ID
+$ip_address = $_SERVER['HTTP_CF_CONNECTING_IP'] 
+    ?? $_SERVER['HTTP_X_FORWARDED_FOR'] 
+    ?? $_SERVER['REMOTE_ADDR'] 
+    ?? '0.0.0.0';
+$ip_address = trim(explode(',', $ip_address)[0]);
+
+$raw_id      = $_POST['reported_by'] ?? $_POST['user_id'] ?? null;
+$user_id_int = (is_numeric($raw_id)) ? (int)$raw_id : null;
+
+if (!$user_id_int) {
+    http_response_code(400);
+    echo json_encode(["success" => false, "message" => "Critical Error: No User ID provided."]);
+    exit();
+}
+
+// 2. Two-Tier Rate Limiting:
+// Tier A: User-Level Limit (Max 2 incident reports per 60 seconds per account)
+$endpoint_tag = 'submit_incident';
+$user_str_id  = (string)$user_id_int;
+
+$user_rate_stmt = $conn->prepare("
+    SELECT COUNT(*) as cnt 
+    FROM api_rate_limits 
+    WHERE identifier = ? 
+      AND identifier_type = 'user' 
+      AND endpoint = ? 
+      AND request_time >= (NOW() - INTERVAL 1 MINUTE)
+");
+$user_rate_stmt->bind_param("ss", $user_str_id, $endpoint_tag);
+$user_rate_stmt->execute();
+$user_rate = $user_rate_stmt->get_result()->fetch_assoc()['cnt'] ?? 0;
+$user_rate_stmt->close();
+
+if ($user_rate >= 2) {
+    http_response_code(429);
+    echo json_encode([
+        "success" => false,
+        "message" => "Report submission limit reached. Please wait 1 minute before submitting another report."
+    ]);
+    exit();
+}
+
+// Tier B: IP-Level Limit (Max 20 requests per 60 seconds to accommodate CGNAT mobile networks)
+$ip_rate_stmt = $conn->prepare("
+    SELECT COUNT(*) as cnt 
+    FROM api_rate_limits 
+    WHERE identifier = ? 
+      AND identifier_type = 'ip' 
+      AND endpoint = ? 
+      AND request_time >= (NOW() - INTERVAL 1 MINUTE)
+");
+$ip_rate_stmt->bind_param("ss", $ip_address, $endpoint_tag);
+$ip_rate_stmt->execute();
+$ip_rate = $ip_rate_stmt->get_result()->fetch_assoc()['cnt'] ?? 0;
+$ip_rate_stmt->close();
+
+if ($ip_rate >= 20) {
+    http_response_code(429);
+    echo json_encode([
+        "success" => false,
+        "message" => "Network traffic limit reached. Please wait a moment before trying again."
+    ]);
+    exit();
+}
+
+// 3. Collect Payload & Validate Sanity
+$incident_type = $_POST['incident_type'] ?? 'General Emergency';
+$description   = isset($_POST['description']) ? trim($_POST['description']) : '';
 $latitude      = isset($_POST['latitude']) ? (float)$_POST['latitude'] : 0.0;
 $longitude     = isset($_POST['longitude']) ? (float)$_POST['longitude'] : 0.0;
 $raw_barangay  = $_POST['barangay'] ?? 'City of Dasmariñas';
 
-// GPS horizontal accuracy (meters) reported by the device, or the residual
-// uncertainty left after the reporter drag-confirms the pin. NULL when unknown.
 $accuracy_raw     = $_POST['accuracy_meters'] ?? null;
 $accuracy_meters  = is_numeric($accuracy_raw) ? round((float)$accuracy_raw, 2) : null;
 
-// Optional Detailed Address Inputs
 $block         = isset($_POST['block']) && trim($_POST['block']) !== '' ? trim($_POST['block']) : null;
 $lot           = isset($_POST['lot']) && trim($_POST['lot']) !== '' ? trim($_POST['lot']) : null;
 $phase         = isset($_POST['phase']) && trim($_POST['phase']) !== '' ? trim($_POST['phase']) : null;
 $subdivision   = isset($_POST['subdivision']) && trim($_POST['subdivision']) !== '' ? trim($_POST['subdivision']) : null;
-
-if (!$user_id_int) {
-    echo json_encode(["success" => false, "message" => "Critical Error: No User ID provided."]);
-    exit();
-}
 
 // Coordinate sanity boundary for Luzon Region
 $min_lat = 12.0000;
@@ -41,7 +107,7 @@ if ($latitude < $min_lat || $latitude > $max_lat || $longitude < $min_lng || $lo
     exit();
 }
 
-// 2. Server-side Deduplication Guard
+// 4. Server-side Deduplication Guard
 $stmt_dup = $conn->prepare("
     SELECT id FROM incidents 
     WHERE reported_by = ? 
@@ -67,9 +133,6 @@ if ($dup_row = $dup_res->fetch_assoc()) {
 }
 $stmt_dup->close();
 
-// The client already resolves the barangay against the GeoJSON boundaries
-// before submitting (see resolve_sector.php). Trust it, just normalize and
-// guard against an empty/garbage value since the column is NOT NULL.
 $barangay = trim($raw_barangay);
 if ($barangay === '' || str_contains($barangay, 'Unknown') || str_contains($barangay, 'Outside')) {
     $barangay = 'City of Dasmariñas';
@@ -84,10 +147,10 @@ $severity = in_array($severity_payload, $allowed_severities) ? $severity_payload
 
 $status        = 'active';
 $admin_remarks = null;
-$is_verified   = 0;    
+$is_verified   = 0;
 $image_path    = null;
 
-// 3. Handle Cloudinary Upload
+// 5. Cloudinary Evidence Upload
 if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === UPLOAD_ERR_OK) {
     $cloud_name = getenv('CLOUDINARY_CLOUD_NAME') ?: ($_ENV['CLOUDINARY_CLOUD_NAME'] ?? 'wyxsiraw');
     $api_key    = getenv('CLOUDINARY_API_KEY') ?: ($_ENV['CLOUDINARY_API_KEY'] ?? null);
@@ -143,8 +206,8 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
     }
 }
 
-// 4. Database Insertion with Optional Address Fields
-$conn->begin_transaction(); 
+// 6. Database Insertion
+$conn->begin_transaction();
 
 try {
     $sql_inc = "INSERT INTO incidents 
@@ -154,21 +217,21 @@ try {
     $stmt_inc = $conn->prepare($sql_inc);
     $stmt_inc->bind_param(
         "isssssssddssiss",
-        $user_id_int,       // 1: i
-        $barangay,          // 2: s
-        $block,             // 3: s
-        $lot,               // 4: s
-        $phase,             // 5: s
-        $subdivision,       // 6: s
-        $incident_type,     // 7: s
-        $severity,          // 8: s
-        $latitude,          // 9: d
-        $longitude,         // 10: d
-        $accuracy_meters,   // 11: s (nullable decimal)
-        $status,            // 12: s (string 'active')
-        $is_verified,       // 13: i (int 0)
-        $image_path,        // 14: s
-        $admin_remarks      // 15: s
+        $user_id_int,
+        $barangay,
+        $block,
+        $lot,
+        $phase,
+        $subdivision,
+        $incident_type,
+        $severity,
+        $latitude,
+        $longitude,
+        $accuracy_meters,
+        $status,
+        $is_verified,
+        $image_path,
+        $admin_remarks
     );
     $stmt_inc->execute();
     
@@ -199,7 +262,15 @@ try {
         $stmt_log->close();
     }
 
-    $conn->commit(); 
+    // Record valid submission for both User and IP tiers
+    $stmt_track = $conn->prepare("INSERT INTO api_rate_limits (identifier, identifier_type, endpoint) VALUES (?, 'user', ?), (?, 'ip', ?)");
+    if ($stmt_track) {
+        $stmt_track->bind_param("ssss", $user_str_id, $endpoint_tag, $ip_address, $endpoint_tag);
+        $stmt_track->execute();
+        $stmt_track->close();
+    }
+
+    $conn->commit();
     echo json_encode([
         "success" => true,
         "message" => "SOS Transmitted successfully!",
@@ -208,9 +279,8 @@ try {
     ]);
 
 } catch (Exception $e) {
-    $conn->rollback(); 
+    $conn->rollback();
     echo json_encode(["success" => false, "message" => "System Error: " . $e->getMessage()]);
 }
 
 $conn->close();
-?>
