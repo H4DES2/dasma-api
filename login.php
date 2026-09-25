@@ -21,6 +21,20 @@ $conn->query("CREATE TABLE IF NOT EXISTS login_attempts (
     INDEX idx_user_time (username, attempt_time)
 )");
 
+// Guard against old existing table schema lacking columns
+$chk_ip = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'ip_address'");
+if ($chk_ip && $chk_ip->num_rows === 0) {
+    $conn->query("ALTER TABLE login_attempts ADD COLUMN ip_address VARCHAR(45) NOT NULL DEFAULT '0.0.0.0'");
+}
+$chk_user = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'username'");
+if ($chk_user && $chk_user->num_rows === 0) {
+    $conn->query("ALTER TABLE login_attempts ADD COLUMN username VARCHAR(100) NOT NULL DEFAULT ''");
+}
+$chk_time = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'attempt_time'");
+if ($chk_time && $chk_time->num_rows === 0) {
+    $conn->query("ALTER TABLE login_attempts ADD COLUMN attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+}
+
 $inputData = $_POST;
 if (empty($inputData)) {
     $raw = file_get_contents('php://input');
