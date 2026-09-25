@@ -2,6 +2,54 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
+// Auto-create API rate limiting table if missing
+$conn->query("CREATE TABLE IF NOT EXISTS api_rate_limits (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    endpoint VARCHAR(50) NOT NULL,
+    request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ip_endpoint_time (ip_address, endpoint, request_time)
+)");
+
+// Extract Client IP
+$ip_address = $_SERVER['HTTP_CF_CONNECTING_IP'] 
+    ?? $_SERVER['HTTP_X_FORWARDED_FOR'] 
+    ?? $_SERVER['REMOTE_ADDR'] 
+    ?? '0.0.0.0';
+$ip_address = trim(explode(',', $ip_address)[0]);
+
+// 1. Rate Limit Guard: Max 60 requests per minute per IP for this endpoint
+$endpoint_tag = 'get_profile';
+$rate_stmt = $conn->prepare("
+    SELECT COUNT(*) as req_count 
+    FROM api_rate_limits 
+    WHERE ip_address = ? 
+      AND endpoint = ? 
+      AND request_time >= (NOW() - INTERVAL 1 MINUTE)
+");
+$rate_stmt->bind_param("ss", $ip_address, $endpoint_tag);
+$rate_stmt->execute();
+$rate_res = $rate_stmt->get_result()->fetch_assoc();
+$rate_stmt->close();
+
+if (($rate_res['req_count'] ?? 0) >= 60) {
+    http_response_code(429);
+    echo json_encode([
+        "success" => false,
+        "message" => "Rate limit exceeded. Please wait a minute before requesting profile data again."
+    ]);
+    exit();
+}
+
+// Log this valid request
+$log_stmt = $conn->prepare("INSERT INTO api_rate_limits (ip_address, endpoint) VALUES (?, ?)");
+if ($log_stmt) {
+    $log_stmt->bind_param("ss", $ip_address, $endpoint_tag);
+    $log_stmt->execute();
+    $log_stmt->close();
+}
+
+// 2. Fetch Profile Data
 $input = json_decode(file_get_contents('php://input'), true);
 $raw_id = $_POST['id'] ?? $_GET['id'] ?? $input['id'] ?? null;
 
