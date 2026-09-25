@@ -153,22 +153,22 @@ try {
     
     $stmt_inc = $conn->prepare($sql_inc);
     $stmt_inc->bind_param(
-        "isssssssddsiiss",
-        $user_id_int,
-        $barangay,
-        $block,
-        $lot,
-        $phase,
-        $subdivision,
-        $incident_type,
-        $severity,
-        $latitude,
-        $longitude,
-        $accuracy_meters,
-        $status,
-        $is_verified,
-        $image_path,
-        $admin_remarks
+        "isssssssddssiss",
+        $user_id_int,       // 1: i
+        $barangay,          // 2: s
+        $block,             // 3: s
+        $lot,               // 4: s
+        $phase,             // 5: s
+        $subdivision,       // 6: s
+        $incident_type,     // 7: s
+        $severity,          // 8: s
+        $latitude,          // 9: d
+        $longitude,         // 10: d
+        $accuracy_meters,   // 11: s (nullable decimal)
+        $status,            // 12: s (string 'active')
+        $is_verified,       // 13: i (int 0)
+        $image_path,        // 14: s
+        $admin_remarks      // 15: s
     );
     $stmt_inc->execute();
     
