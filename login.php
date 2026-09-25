@@ -11,8 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-// Auto-create rate limiting table if missing
-$conn->query("CREATE TABLE IF NOT EXISTS login_attempts (
+// Separate table for mobile app rate limiting (leaves web portal's login_attempts alone)
+$conn->query("CREATE TABLE IF NOT EXISTS app_login_rate_limits (
     id INT AUTO_INCREMENT PRIMARY KEY,
     ip_address VARCHAR(45) NOT NULL,
     username VARCHAR(100) NOT NULL,
@@ -20,20 +20,6 @@ $conn->query("CREATE TABLE IF NOT EXISTS login_attempts (
     INDEX idx_ip_time (ip_address, attempt_time),
     INDEX idx_user_time (username, attempt_time)
 )");
-
-// Guard against old existing table schema lacking columns
-$chk_ip = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'ip_address'");
-if ($chk_ip && $chk_ip->num_rows === 0) {
-    $conn->query("ALTER TABLE login_attempts ADD COLUMN ip_address VARCHAR(45) NOT NULL DEFAULT '0.0.0.0'");
-}
-$chk_user = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'username'");
-if ($chk_user && $chk_user->num_rows === 0) {
-    $conn->query("ALTER TABLE login_attempts ADD COLUMN username VARCHAR(100) NOT NULL DEFAULT ''");
-}
-$chk_time = $conn->query("SHOW COLUMNS FROM login_attempts LIKE 'attempt_time'");
-if ($chk_time && $chk_time->num_rows === 0) {
-    $conn->query("ALTER TABLE login_attempts ADD COLUMN attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
-}
 
 $inputData = $_POST;
 if (empty($inputData)) {
@@ -56,17 +42,17 @@ if (empty($username) || empty($password)) {
     exit();
 }
 
-// Identify client IP
+// Client IP detection
 $ip_address = $_SERVER['HTTP_CF_CONNECTING_IP'] 
     ?? $_SERVER['HTTP_X_FORWARDED_FOR'] 
     ?? $_SERVER['REMOTE_ADDR'] 
     ?? '0.0.0.0';
 $ip_address = trim(explode(',', $ip_address)[0]);
 
-// 1. Check Rate Limit: max 5 failed attempts in the last 15 minutes
+// 1. Check Rate Limit (5 failed attempts per 15 minutes)
 $rate_stmt = $conn->prepare("
     SELECT COUNT(*) as failed_attempts 
-    FROM login_attempts 
+    FROM app_login_rate_limits 
     WHERE (ip_address = ? OR username = ?) 
       AND attempt_time >= (NOW() - INTERVAL 15 MINUTE)
 ");
@@ -85,8 +71,8 @@ if (($rate_res['failed_attempts'] ?? 0) >= 5) {
     exit();
 }
 
-function record_failed_attempt($conn, $ip, $user) {
-    $stmt = $conn->prepare("INSERT INTO login_attempts (ip_address, username) VALUES (?, ?)");
+function record_app_failed_attempt($conn, $ip, $user) {
+    $stmt = $conn->prepare("INSERT INTO app_login_rate_limits (ip_address, username) VALUES (?, ?)");
     if ($stmt) {
         $stmt->bind_param("ss", $ip, $user);
         $stmt->execute();
@@ -103,8 +89,8 @@ if ($result && $result->num_rows > 0) {
     $user = $result->fetch_assoc();
 
     if (password_verify($password, $user['password'])) {
-        // Clear failed attempts upon successful authentication
-        $clear_stmt = $conn->prepare("DELETE FROM login_attempts WHERE ip_address = ? OR username = ?");
+        // Clear failed attempts on success
+        $clear_stmt = $conn->prepare("DELETE FROM app_login_rate_limits WHERE ip_address = ? OR username = ?");
         if ($clear_stmt) {
             $clear_stmt->bind_param("ss", $ip_address, $username);
             $clear_stmt->execute();
@@ -140,7 +126,7 @@ if ($result && $result->num_rows > 0) {
             ]
         ]);
     } else {
-        record_failed_attempt($conn, $ip_address, $username);
+        record_app_failed_attempt($conn, $ip_address, $username);
         echo json_encode([
             "status" => "error",
             "success" => false,
@@ -148,7 +134,7 @@ if ($result && $result->num_rows > 0) {
         ]);
     }
 } else {
-    record_failed_attempt($conn, $ip_address, $username);
+    record_app_failed_attempt($conn, $ip_address, $username);
     echo json_encode([
         "status" => "error",
         "success" => false,
