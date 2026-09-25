@@ -148,12 +148,12 @@ $conn->begin_transaction();
 
 try {
     $sql_inc = "INSERT INTO incidents 
-                (client_id, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, accuracy_meters, status, reported_by, is_verified, image_path, admin_remarks) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                (reported_by, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, accuracy_meters, status, is_verified, image_path, admin_remarks) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
     $stmt_inc = $conn->prepare($sql_inc);
     $stmt_inc->bind_param(
-        "isssssssdddsiiss",
+        "isssssssddsiiss",
         $user_id_int,
         $barangay,
         $block,
@@ -166,7 +166,6 @@ try {
         $longitude,
         $accuracy_meters,
         $status,
-        $user_id_int,
         $is_verified,
         $image_path,
         $admin_remarks
