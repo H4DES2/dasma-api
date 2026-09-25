@@ -2,37 +2,6 @@
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-// Database Spatial Resolver
-function resolveBarangaySector(mysqli $conn, float $lat, float $lng, string $fallback = 'Zone IV'): string {
-    if (strcasecmp(trim($fallback), 'Burol Main') === 0) {
-        $fallback = 'Burol';
-    }
-
-    if ($lat == 0.0 || $lng == 0.0) return $fallback;
-
-    $sql = "
-        SELECT name 
-        FROM barangays 
-        WHERE boundary IS NOT NULL 
-        ORDER BY ST_Distance(ST_SRID(boundary, 0), POINT(?, ?)) ASC 
-        LIMIT 1
-    ";
-
-    $stmt = $conn->prepare($sql);
-    if ($stmt) {
-        $stmt->bind_param("dd", $lng, $lat);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        if ($row = $res->fetch_assoc()) {
-            $stmt->close();
-            $sector = trim($row['name']);
-            return (strcasecmp($sector, 'Burol Main') === 0) ? 'Burol' : $sector;
-        }
-        $stmt->close();
-    }
-    return $fallback;
-}
-
 // 1. Collect and Validate Payload
 $raw_id        = $_POST['reported_by'] ?? $_POST['user_id'] ?? null;
 $user_id_int   = (is_numeric($raw_id)) ? (int)$raw_id : null; 
@@ -41,6 +10,11 @@ $description   = isset($_POST['description']) ? trim($_POST['description']) : ''
 $latitude      = isset($_POST['latitude']) ? (float)$_POST['latitude'] : 0.0;
 $longitude     = isset($_POST['longitude']) ? (float)$_POST['longitude'] : 0.0;
 $raw_barangay  = $_POST['barangay'] ?? 'City of Dasmariñas';
+
+// GPS horizontal accuracy (meters) reported by the device, or the residual
+// uncertainty left after the reporter drag-confirms the pin. NULL when unknown.
+$accuracy_raw     = $_POST['accuracy_meters'] ?? null;
+$accuracy_meters  = is_numeric($accuracy_raw) ? round((float)$accuracy_raw, 2) : null;
 
 // Optional Detailed Address Inputs
 $block         = isset($_POST['block']) && trim($_POST['block']) !== '' ? trim($_POST['block']) : null;
@@ -93,8 +67,15 @@ if ($dup_row = $dup_res->fetch_assoc()) {
 }
 $stmt_dup->close();
 
-if (empty($barangay) || str_contains($barangay, 'Unknown') || str_contains($barangay, 'Outside')) {
-    $barangay = 'Zone IV'; // Default valid Dasma sector for out-of-bounds testing
+// The client already resolves the barangay against the GeoJSON boundaries
+// before submitting (see resolve_sector.php). Trust it, just normalize and
+// guard against an empty/garbage value since the column is NOT NULL.
+$barangay = trim($raw_barangay);
+if ($barangay === '' || str_contains($barangay, 'Unknown') || str_contains($barangay, 'Outside')) {
+    $barangay = 'City of Dasmariñas';
+}
+if (strcasecmp($barangay, 'Burol Main') === 0) {
+    $barangay = 'Burol';
 }
 
 $severity_payload   = $_POST['severity'] ?? 'Minor';
@@ -167,12 +148,12 @@ $conn->begin_transaction();
 
 try {
     $sql_inc = "INSERT INTO incidents 
-                (client_id, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, status, reported_by, is_verified, image_path, admin_remarks) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                (client_id, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, accuracy_meters, status, reported_by, is_verified, image_path, admin_remarks) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
     $stmt_inc = $conn->prepare($sql_inc);
     $stmt_inc->bind_param(
-        "isssssssddsiiss",
+        "isssssssdddsiiss",
         $user_id_int,
         $barangay,
         $block,
@@ -183,6 +164,7 @@ try {
         $severity,
         $latitude,
         $longitude,
+        $accuracy_meters,
         $status,
         $user_id_int,
         $is_verified,
