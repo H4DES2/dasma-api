@@ -13,6 +13,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
+$conn->query("CREATE TABLE IF NOT EXISTS api_rate_limits (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    identifier VARCHAR(64) NOT NULL,
+    identifier_type ENUM('ip', 'user') NOT NULL,
+    endpoint VARCHAR(50) NOT NULL,
+    request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_rate_lookup (identifier, identifier_type, endpoint, request_time)
+)");
+
+// Check and repair older schema variations
+$check_identifier = $conn->query("SHOW COLUMNS FROM api_rate_limits LIKE 'identifier'");
+if ($check_identifier && $check_identifier->num_rows === 0) {
+    $conn->query("DROP TABLE api_rate_limits");
+    $conn->query("CREATE TABLE api_rate_limits (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        identifier VARCHAR(64) NOT NULL,
+        identifier_type ENUM('ip', 'user') NOT NULL,
+        endpoint VARCHAR(50) NOT NULL,
+        request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_rate_lookup (identifier, identifier_type, endpoint, request_time)
+    )");
+}
 // Auto-create API rate limiting table if missing
 $conn->query("CREATE TABLE IF NOT EXISTS api_rate_limits (
     id INT AUTO_INCREMENT PRIMARY KEY,
