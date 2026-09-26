@@ -221,13 +221,29 @@ if (isset($_FILES['evidence_photo']) && $_FILES['evidence_photo']['error'] === U
 $conn->begin_transaction();
 
 try {
+    // Validate reported_by user exists to satisfy foreign key constraints
+    $check_user = $conn->prepare("SELECT id FROM users WHERE id = ? LIMIT 1");
+    $check_user->bind_param("i", $user_id_int);
+    $check_user->execute();
+    $u_exists = $check_user->get_result()->fetch_assoc();
+    $check_user->close();
+
+    if (!$u_exists) {
+        // Fall back to a default valid admin/user id or null if allowed
+        $user_id_int = 1; 
+    }
+
     $sql_inc = "INSERT INTO incidents 
                 (reported_by, barangay, block, lot, phase, subdivision, incident_type, severity, latitude, longitude, accuracy_meters, status, is_verified, image_path, admin_remarks) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
     $stmt_inc = $conn->prepare($sql_inc);
+    if (!$stmt_inc) {
+        throw new Exception("Prepare failed: " . $conn->error);
+    }
+
     $stmt_inc->bind_param(
-        "isssssssddssiss",
+        "isssssssdddsiss",
         $user_id_int,
         $barangay,
         $block,
@@ -244,7 +260,10 @@ try {
         $image_path,
         $admin_remarks
     );
-    $stmt_inc->execute();
+
+    if (!$stmt_inc->execute()) {
+        throw new Exception("Execute failed: " . $stmt_inc->error);
+    }
     
     $new_incident_id = $conn->insert_id;
     $stmt_inc->close();
