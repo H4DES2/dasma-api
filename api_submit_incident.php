@@ -61,29 +61,30 @@ if (!$user_id_int) {
     exit();
 }
 
-// 2. Two-Tier Rate Limiting:
-// Tier A: User-Level Limit (Max 2 incident reports per 60 seconds per account)
+// Tier A: User-Level Limit (Strict 1 report per 30 seconds cooldown per account)
 $endpoint_tag = 'submit_incident';
 $user_str_id  = (string)$user_id_int;
 
 $user_rate_stmt = $conn->prepare("
-    SELECT COUNT(*) as cnt 
+    SELECT TIMESTAMPDIFF(SECOND, MAX(request_time), NOW()) AS elapsed_sec 
     FROM api_rate_limits 
     WHERE identifier = ? 
       AND identifier_type = 'user' 
-      AND endpoint = ? 
-      AND request_time >= (NOW() - INTERVAL 1 MINUTE)
+      AND endpoint = ?
 ");
 $user_rate_stmt->bind_param("ss", $user_str_id, $endpoint_tag);
 $user_rate_stmt->execute();
-$user_rate = $user_rate_stmt->get_result()->fetch_assoc()['cnt'] ?? 0;
+$rate_res = $user_rate_stmt->get_result()->fetch_assoc();
 $user_rate_stmt->close();
 
-if ($user_rate >= 2) {
+$elapsed = $rate_res['elapsed_sec'] !== null ? (int)$rate_res['elapsed_sec'] : null;
+
+if ($elapsed !== null && $elapsed < 30) {
+    $remaining = 30 - $elapsed;
     http_response_code(429);
     echo json_encode([
         "success" => false,
-        "message" => "Report submission limit reached. Please wait 1 minute before submitting another report."
+        "message" => "Please wait {$remaining} second" . ($remaining > 1 ? "s" : "") . " before submitting another report."
     ]);
     exit();
 }
