@@ -152,13 +152,12 @@ try {
         $stmt_pref = $conn->prepare("
             INSERT INTO user_profiles (user_id, theme, font_size, profile_photo) 
             VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE theme = VALUES(theme), font_size = VALUES(font_size)
+            ON DUPLICATE KEY UPDATE 
+                theme = VALUES(theme), 
+                font_size = VALUES(font_size)
         ");
         $stmt_pref->bind_param("isss", $user_id, $final_theme, $final_font, $photo_keep);
-
-        if (!$stmt_pref->execute()) {
-            throw new Exception("Profile preference update failed: " . $stmt_pref->error);
-        }
+        $stmt_pref->execute();
         $stmt_pref->close();
 
         $_SESSION['theme'] = $final_theme;
