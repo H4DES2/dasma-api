@@ -12,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once __DIR__ . '/config.php';
 
-// Auto-create API rate limiting table if missing using the unified schema
+// Auto-create API rate limiting table if missing
 $conn->query("CREATE TABLE IF NOT EXISTS api_rate_limits (
     id INT AUTO_INCREMENT PRIMARY KEY,
     identifier VARCHAR(64) NOT NULL,
@@ -29,7 +29,7 @@ $ip_address = $_SERVER['HTTP_CF_CONNECTING_IP']
     ?? '0.0.0.0';
 $ip_address = trim(explode(',', $ip_address)[0]);
 
-// 2. Rate Limit Guard: Max 60 requests per minute per IP for this endpoint
+// Rate Limit Guard: Max 60 requests per minute per IP
 $endpoint_tag = 'get_profile';
 $rate_stmt = $conn->prepare("
     SELECT COUNT(*) as req_count 
@@ -64,28 +64,26 @@ if ($log_stmt) {
     $log_stmt->close();
 }
 
-// 3. Fetch Profile Data
+// 3. Fetch Profile Data with Dual-Table Photo Fallback
 $input = json_decode(file_get_contents('php://input'), true);
 $raw_id = $_POST['id'] ?? $_GET['id'] ?? $_POST['user_id'] ?? $_GET['user_id'] ?? $input['id'] ?? $input['user_id'] ?? null;
 
 if ($raw_id !== null && $raw_id !== '') {
+    $sql = "SELECT 
+                u.id, u.first_name, u.last_name, u.username, u.barangay, u.department, u.is_online,
+                COALESCE(NULLIF(p.profile_photo, ''), NULLIF(u.profile_photo, ''), '') AS profile_photo,
+                COALESCE(p.phone_number, '') AS phone_number,
+                COALESCE(p.theme, 'light') AS theme,
+                COALESCE(p.font_size, '16px') AS font_size
+            FROM users u
+            LEFT JOIN user_profiles p ON u.id = p.user_id
+            WHERE " . (is_numeric($raw_id) ? "u.id = ?" : "u.username = ?") . "
+            LIMIT 1";
+
+    $stmt = $conn->prepare($sql);
     if (is_numeric($raw_id)) {
-        $sql = "SELECT 
-                    u.id, u.first_name, u.last_name, u.username, u.barangay, u.department, u.is_online,
-                    p.profile_photo, p.phone_number, p.theme, p.font_size 
-                FROM users u
-                LEFT JOIN user_profiles p ON u.id = p.user_id
-                WHERE u.id = ?";
-        $stmt = $conn->prepare($sql);
         $stmt->bind_param("i", $raw_id);
     } else {
-        $sql = "SELECT 
-                    u.id, u.first_name, u.last_name, u.username, u.barangay, u.department, u.is_online,
-                    p.profile_photo, p.phone_number, p.theme, p.font_size 
-                FROM users u
-                LEFT JOIN user_profiles p ON u.id = p.user_id
-                WHERE u.username = ?";
-        $stmt = $conn->prepare($sql);
         $stmt->bind_param("s", $raw_id);
     }
     
@@ -109,10 +107,10 @@ if ($raw_id !== null && $raw_id !== '') {
             "barangay" => $user['barangay'] ?? 'City of Dasmariñas',           
             "department" => $user['department'],
             "is_online" => (int)($user['is_online'] ?? 0),
-            "profile_photo" => $user['profile_photo'] ?? '', 
-            "phone_number" => $user['phone_number'] ?? '',
-            "theme" => $user['theme'] ?? 'dark',                
-            "font_size" => $user['font_size'] ?? '16px',
+            "profile_photo" => $user['profile_photo'], 
+            "phone_number" => $user['phone_number'],
+            "theme" => $user['theme'],                
+            "font_size" => $user['font_size'],
             "profile" => $user
         ]);
     } else {

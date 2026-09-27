@@ -14,9 +14,16 @@ if (!$user_id) {
     exit();
 }
 
-// Helper: Ensure profile row exists
+// Helper: Fetch existing profile data
 function getExistingProfile(mysqli $conn, int $user_id): array {
-    $stmt = $conn->prepare("SELECT theme, font_size, phone_number, profile_photo FROM user_profiles WHERE user_id = ? LIMIT 1");
+    $stmt = $conn->prepare("
+        SELECT up.theme, up.font_size, up.phone_number, 
+               COALESCE(NULLIF(up.profile_photo, ''), NULLIF(u.profile_photo, '')) AS profile_photo
+        FROM users u
+        LEFT JOIN user_profiles up ON u.id = up.user_id
+        WHERE u.id = ? 
+        LIMIT 1
+    ");
     $stmt->bind_param("i", $user_id);
     $stmt->execute();
     $res = $stmt->get_result()->fetch_assoc();
@@ -24,7 +31,7 @@ function getExistingProfile(mysqli $conn, int $user_id): array {
     return $res ?: [];
 }
 
-// 1. Handle Manage Profile (Phone Number & Password Change)
+// 1. Manage Personal Info (Phone & Password)
 if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     $phone       = $_POST['phone_number'] ?? null;
     $current_pwd = $_POST['current_password'] ?? '';
@@ -32,13 +39,13 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
 
     if ($phone !== null) {
         $existing = getExistingProfile($conn, $user_id);
-        if (!empty($existing)) {
-            $stmt_phone = $conn->prepare("UPDATE user_profiles SET phone_number = ? WHERE user_id = ?");
-            $stmt_phone->bind_param("si", $phone, $user_id);
-        } else {
-            $stmt_phone = $conn->prepare("INSERT INTO user_profiles (user_id, phone_number, theme, font_size) VALUES (?, ?, 'light', '16px')");
-            $stmt_phone->bind_param("is", $user_id, $phone);
-        }
+        $stmt_phone = $conn->prepare("
+            INSERT INTO user_profiles (user_id, phone_number, theme, font_size, profile_photo) 
+            VALUES (?, ?, 'light', '16px', ?)
+            ON DUPLICATE KEY UPDATE phone_number = VALUES(phone_number)
+        ");
+        $existing_photo = $existing['profile_photo'] ?? null;
+        $stmt_phone->bind_param("iss", $user_id, $phone, $existing_photo);
         $stmt_phone->execute();
         $stmt_phone->close();
     }
@@ -78,7 +85,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     exit();
 }
 
-// 2. Handle Profile Photo Sync
+// 2. Profile Photo Sync
 if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     $photo_url = trim($_POST['profile_photo'] ?? '');
 
@@ -88,36 +95,36 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
         exit();
     }
 
-    $existing = getExistingProfile($conn, $user_id);
-    if (!empty($existing)) {
-        $stmt = $conn->prepare("UPDATE user_profiles SET profile_photo = ? WHERE user_id = ?");
-        $stmt->bind_param("si", $photo_url, $user_id);
-    } else {
-        $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) VALUES (?, ?, 'light', '16px')");
-        $stmt->bind_param("is", $user_id, $photo_url);
-    }
+    // Update both tables to guarantee data consistency
+    $stmt1 = $conn->prepare("
+        INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) 
+        VALUES (?, ?, 'light', '16px')
+        ON DUPLICATE KEY UPDATE profile_photo = VALUES(profile_photo)
+    ");
+    $stmt1->bind_param("is", $user_id, $photo_url);
+    $ok1 = $stmt1->execute();
+    $stmt1->close();
 
-    if ($stmt->execute()) {
-        try {
-            $stmt_u = $conn->prepare("UPDATE users SET profile_photo = ? WHERE id = ?");
-            if ($stmt_u) {
-                $stmt_u->bind_param("si", $photo_url, $user_id);
-                $stmt_u->execute();
-                $stmt_u->close();
-            }
-        } catch (Exception $e) {}
+    try {
+        $stmt2 = $conn->prepare("UPDATE users SET profile_photo = ? WHERE id = ?");
+        if ($stmt2) {
+            $stmt2->bind_param("si", $photo_url, $user_id);
+            $stmt2->execute();
+            $stmt2->close();
+        }
+    } catch (Exception $e) {}
 
+    if ($ok1) {
         echo json_encode(["success" => true, "message" => "Photo synced!"]);
     } else {
         echo json_encode(["success" => false, "message" => "Sync failed: " . $conn->error]);
     }
 
-    $stmt->close();
     $conn->close();
     exit();
 }
 
-// 3. Dynamic Partial Settings Update (Theme, Font Size, Barangay, Online State)
+// 3. Dynamic Partial Settings Update (Theme, Font Size, Barangay)
 $conn->begin_transaction();
 try {
     if (isset($_POST['barangay'])) {
@@ -137,21 +144,20 @@ try {
 
         $final_theme = $theme !== null ? strtolower(trim($theme)) : ($existing['theme'] ?? 'light');
         $final_font  = $font_size !== null ? trim($font_size) : ($existing['font_size'] ?? '16px');
+        $photo_keep  = $existing['profile_photo'] ?? null;
 
-        if (!empty($existing)) {
-            $stmt_pref = $conn->prepare("UPDATE user_profiles SET theme = ?, font_size = ? WHERE user_id = ?");
-            $stmt_pref->bind_param("ssi", $final_theme, $final_font, $user_id);
-        } else {
-            $stmt_pref = $conn->prepare("INSERT INTO user_profiles (user_id, theme, font_size) VALUES (?, ?, ?)");
-            $stmt_pref->bind_param("iss", $user_id, $final_theme, $final_font);
-        }
+        $stmt_pref = $conn->prepare("
+            INSERT INTO user_profiles (user_id, theme, font_size, profile_photo) 
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE theme = VALUES(theme), font_size = VALUES(font_size)
+        ");
+        $stmt_pref->bind_param("isss", $user_id, $final_theme, $final_font, $photo_keep);
 
         if (!$stmt_pref->execute()) {
             throw new Exception("Profile preference update failed: " . $stmt_pref->error);
         }
         $stmt_pref->close();
 
-        // 🚀 Sync PHP Session so page refresh doesn't revert to dark!
         $_SESSION['theme'] = $final_theme;
         $_SESSION['font_size'] = $final_font;
     }
