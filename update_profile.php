@@ -30,8 +30,7 @@ if (!$user_id) {
 
 function getExistingProfile(mysqli $conn, int $user_id): array {
     $stmt = $conn->prepare("
-        SELECT up.theme, up.font_size, up.phone_number, 
-               COALESCE(NULLIF(up.profile_photo, ''), NULLIF(u.profile_photo, '')) AS profile_photo
+        SELECT up.theme, up.font_size, up.phone_number, up.profile_photo
         FROM users u
         LEFT JOIN user_profiles up ON u.id = up.user_id
         WHERE u.id = ? 
@@ -117,15 +116,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     $stmt1->bind_param("is", $user_id, $photo_url);
     $ok1 = $stmt1->execute();
     $stmt1->close();
-
-    try {
-        $stmt2 = $conn->prepare("UPDATE users SET profile_photo = ? WHERE id = ?");
-        if ($stmt2) {
-            $stmt2->bind_param("si", $photo_url, $user_id);
-            $stmt2->execute();
-            $stmt2->close();
-        }
-    } catch (Exception $e) {}
 
     if ($ok1) {
         echo json_encode(["success" => true, "message" => "Photo synced!"]);

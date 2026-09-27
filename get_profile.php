@@ -84,13 +84,15 @@ $input = json_decode(file_get_contents('php://input'), true);
 $raw_id = $_POST['id'] ?? $_GET['id'] ?? $_POST['user_id'] ?? $_GET['user_id'] ?? $input['id'] ?? $input['user_id'] ?? null;
 
 if ($raw_id !== null && $raw_id !== '') {
-    // Coalesce profile_photo between user_profiles and users table so photo never disappears
     $sql = "SELECT 
-                u.id, u.first_name, u.last_name, u.username, 
+                u.id, 
+                u.first_name, 
+                u.last_name, 
+                u.username, 
                 COALESCE(u.barangay, 'City of Dasmariñas') AS barangay, 
                 COALESCE(u.department, '') AS department, 
                 COALESCE(u.is_online, 0) AS is_online,
-                COALESCE(NULLIF(p.profile_photo, ''), NULLIF(u.profile_photo, ''), '') AS profile_photo,
+                COALESCE(p.profile_photo, '') AS profile_photo,
                 COALESCE(p.phone_number, '') AS phone_number,
                 COALESCE(p.theme, 'light') AS theme,
                 COALESCE(p.font_size, '16px') AS font_size 
