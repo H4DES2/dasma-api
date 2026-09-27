@@ -1,10 +1,24 @@
 <?php
+while (ob_get_level() > 0) { 
+    ob_end_clean(); 
+}
+
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
+
+if (file_exists(__DIR__ . '/php/config.php')) {
+    require_once __DIR__ . '/php/config.php';
+} elseif (file_exists(__DIR__ . '/config.php')) {
+    require_once __DIR__ . '/config.php';
+} elseif (file_exists(__DIR__ . '/../php/config.php')) {
+    require_once __DIR__ . '/../php/config.php';
+} else {
+    echo json_encode(["success" => false, "message" => "Database config file not found."]);
+    exit();
+}
 
 $raw_id = $_POST['userId'] ?? $_POST['id'] ?? ($_SESSION['user_id'] ?? null);
 $user_id = $raw_id !== null ? (int)$raw_id : null;
@@ -14,7 +28,6 @@ if (!$user_id) {
     exit();
 }
 
-// Helper: Fetch existing profile data
 function getExistingProfile(mysqli $conn, int $user_id): array {
     $stmt = $conn->prepare("
         SELECT up.theme, up.font_size, up.phone_number, 
@@ -24,6 +37,7 @@ function getExistingProfile(mysqli $conn, int $user_id): array {
         WHERE u.id = ? 
         LIMIT 1
     ");
+    if (!$stmt) return [];
     $stmt->bind_param("i", $user_id);
     $stmt->execute();
     $res = $stmt->get_result()->fetch_assoc();
@@ -95,7 +109,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
         exit();
     }
 
-    // Update both tables to guarantee data consistency
     $stmt1 = $conn->prepare("
         INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) 
         VALUES (?, ?, 'light', '16px')
@@ -124,7 +137,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
     exit();
 }
 
-// 3. Dynamic Partial Settings Update (Theme, Font Size, Barangay)
+// 3. Dynamic Partial Settings Update
 $conn->begin_transaction();
 try {
     if (isset($_POST['barangay'])) {
