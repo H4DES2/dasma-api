@@ -1,13 +1,27 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 require_once __DIR__ . '/config.php';
 header("Content-Type: application/json; charset=UTF-8");
 
-$raw_id = $_POST['userId'] ?? $_POST['id'] ?? null;
+$raw_id = $_POST['userId'] ?? $_POST['id'] ?? ($_SESSION['user_id'] ?? null);
 $user_id = $raw_id !== null ? (int)$raw_id : null;
 
 if (!$user_id) {
     echo json_encode(["success" => false, "message" => "Missing User ID"]);
     exit();
+}
+
+// Helper: Ensure profile row exists
+function getExistingProfile(mysqli $conn, int $user_id): array {
+    $stmt = $conn->prepare("SELECT theme, font_size, phone_number, profile_photo FROM user_profiles WHERE user_id = ? LIMIT 1");
+    $stmt->bind_param("i", $user_id);
+    $stmt->execute();
+    $res = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $res ?: [];
 }
 
 // 1. Handle Manage Profile (Phone Number & Password Change)
@@ -16,19 +30,19 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_personal_info') {
     $current_pwd = $_POST['current_password'] ?? '';
     $new_pwd     = $_POST['new_password'] ?? '';
 
-    // Upsert phone number into user_profiles
     if ($phone !== null) {
-        $stmt_phone = $conn->prepare("
-            INSERT INTO user_profiles (user_id, phone_number, theme, font_size) 
-            VALUES (?, ?, 'dark', '16px')
-            ON DUPLICATE KEY UPDATE phone_number = VALUES(phone_number)
-        ");
-        $stmt_phone->bind_param("is", $user_id, $phone);
+        $existing = getExistingProfile($conn, $user_id);
+        if (!empty($existing)) {
+            $stmt_phone = $conn->prepare("UPDATE user_profiles SET phone_number = ? WHERE user_id = ?");
+            $stmt_phone->bind_param("si", $phone, $user_id);
+        } else {
+            $stmt_phone = $conn->prepare("INSERT INTO user_profiles (user_id, phone_number, theme, font_size) VALUES (?, ?, 'light', '16px')");
+            $stmt_phone->bind_param("is", $user_id, $phone);
+        }
         $stmt_phone->execute();
         $stmt_phone->close();
     }
 
-    // Password validation
     if (!empty($new_pwd)) {
         if (empty($current_pwd)) {
             echo json_encode(["success" => false, "message" => "Current password is required to set a new password."]);
@@ -74,12 +88,14 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
         exit();
     }
 
-    $stmt = $conn->prepare("
-        INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) 
-        VALUES (?, ?, 'dark', '16px')
-        ON DUPLICATE KEY UPDATE profile_photo = VALUES(profile_photo)
-    ");
-    $stmt->bind_param("is", $user_id, $photo_url);
+    $existing = getExistingProfile($conn, $user_id);
+    if (!empty($existing)) {
+        $stmt = $conn->prepare("UPDATE user_profiles SET profile_photo = ? WHERE user_id = ?");
+        $stmt->bind_param("si", $photo_url, $user_id);
+    } else {
+        $stmt = $conn->prepare("INSERT INTO user_profiles (user_id, profile_photo, theme, font_size) VALUES (?, ?, 'light', '16px')");
+        $stmt->bind_param("is", $user_id, $photo_url);
+    }
 
     if ($stmt->execute()) {
         try {
@@ -89,9 +105,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
                 $stmt_u->execute();
                 $stmt_u->close();
             }
-        } catch (Exception $e) {
-            // Optional users column fallback
-        }
+        } catch (Exception $e) {}
 
         echo json_encode(["success" => true, "message" => "Photo synced!"]);
     } else {
@@ -106,65 +120,40 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
 // 3. Dynamic Partial Settings Update (Theme, Font Size, Barangay, Online State)
 $conn->begin_transaction();
 try {
-    // A. Update users table only for provided values
-    $user_updates = [];
-    $user_types = "";
-    $user_params = [];
-
-    if (isset($_POST['is_online'])) {
-        $user_updates[] = "is_online = ?";
-        $user_types .= "i";
-        $user_params[] = (int)$_POST['is_online'];
-    }
-    if (isset($_POST['department'])) {
-        $user_updates[] = "department = ?";
-        $user_types .= "s";
-        $user_params[] = trim($_POST['department']);
-    }
     if (isset($_POST['barangay'])) {
-        $user_updates[] = "barangay = ?";
-        $user_types .= "s";
-        $user_params[] = trim($_POST['barangay']);
+        $brgy = trim($_POST['barangay']);
+        $stmt_b = $conn->prepare("UPDATE users SET barangay = ? WHERE id = ?");
+        $stmt_b->bind_param("si", $brgy, $user_id);
+        $stmt_b->execute();
+        $stmt_b->close();
+        $_SESSION['barangay'] = $brgy;
     }
 
-    if (!empty($user_updates)) {
-        $sql1 = "UPDATE users SET " . implode(", ", $user_updates) . " WHERE id = ?";
-        $user_types .= "i";
-        $user_params[] = $user_id;
-
-        $stmt1 = $conn->prepare($sql1);
-        $stmt1->bind_param($user_types, ...$user_params);
-        if (!$stmt1->execute()) {
-            throw new Exception("Users update failed: " . $stmt1->error);
-        }
-        $stmt1->close();
-    }
-
-    // B. Upsert preferences into user_profiles only for provided values
     $theme     = $_POST['theme'] ?? null;
     $font_size = $_POST['font_size'] ?? null;
 
     if ($theme !== null || $font_size !== null) {
-        $stmt_check = $conn->prepare("SELECT theme, font_size FROM user_profiles WHERE user_id = ?");
-        $stmt_check->bind_param("i", $user_id);
-        $stmt_check->execute();
-        $prof_res = $stmt_check->get_result();
-        $existing = $prof_res->fetch_assoc();
-        $stmt_check->close();
+        $existing = getExistingProfile($conn, $user_id);
 
-        $final_theme = $theme ?? ($existing['theme'] ?? 'dark');
-        $final_font  = $font_size ?? ($existing['font_size'] ?? '16px');
+        $final_theme = $theme !== null ? strtolower(trim($theme)) : ($existing['theme'] ?? 'light');
+        $final_font  = $font_size !== null ? trim($font_size) : ($existing['font_size'] ?? '16px');
 
-        $stmt2 = $conn->prepare("
-            INSERT INTO user_profiles (user_id, theme, font_size) 
-            VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE theme = VALUES(theme), font_size = VALUES(font_size)
-        ");
-        $stmt2->bind_param("iss", $user_id, $final_theme, $final_font);
-        if (!$stmt2->execute()) {
-            throw new Exception("Profile preference update failed: " . $stmt2->error);
+        if (!empty($existing)) {
+            $stmt_pref = $conn->prepare("UPDATE user_profiles SET theme = ?, font_size = ? WHERE user_id = ?");
+            $stmt_pref->bind_param("ssi", $final_theme, $final_font, $user_id);
+        } else {
+            $stmt_pref = $conn->prepare("INSERT INTO user_profiles (user_id, theme, font_size) VALUES (?, ?, ?)");
+            $stmt_pref->bind_param("iss", $user_id, $final_theme, $final_font);
         }
-        $stmt2->close();
+
+        if (!$stmt_pref->execute()) {
+            throw new Exception("Profile preference update failed: " . $stmt_pref->error);
+        }
+        $stmt_pref->close();
+
+        // 🚀 Sync PHP Session so page refresh doesn't revert to dark!
+        $_SESSION['theme'] = $final_theme;
+        $_SESSION['font_size'] = $final_font;
     }
 
     $conn->commit();
