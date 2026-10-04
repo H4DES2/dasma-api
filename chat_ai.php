@@ -19,29 +19,58 @@ if (empty($userMessage)) {
     exit();
 }
 
-$apiKey = $_ENV['GEMINI_API_KEY'] ?? getenv('GEMINI_API_KEY') ?? '';
-
-if (empty($apiKey)) {
-    echo json_encode(['success' => false, 'reply' => 'Gemini API key is not configured on the server.']);
+// 1. Evacuation Centers Intent
+if (preg_match('/(evac|evacuation|shelter|safe place)/i', $userMessage)) {
+    echo json_encode([
+        'success' => true,
+        'reply' => "To find and navigate to the nearest evacuation center:\n" .
+                   "1. Tap the 'SOS / Evacuation' icon on the bottom navigation bar.\n" .
+                   "2. The app will locate open city evacuation facilities and show their current capacity.\n" .
+                   "3. Tap on any shelter to see the fastest driving/walking route and turnaround distance from your current location."
+    ]);
     exit();
 }
 
-$url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $apiKey;
+// 2. Incident Reporting Intent
+if (preg_match('/(how to report|report|steps|procedure|process)/i', $userMessage)) {
+    echo json_encode([
+        'success' => true,
+        'reply' => "To report an emergency:\n" .
+                   "1. Tap 'REPORT EMERGENCY' on your Home Dashboard.\n" .
+                   "2. Take photo evidence of the scene.\n" .
+                   "3. Adjust your location pin within the 100m radar boundary if needed.\n" .
+                   "4. Select the emergency category and specific type.\n" .
+                   "5. Add landmark/street details and a brief description.\n" .
+                   "6. Tap 'TRANSMIT SOS'.\n" .
+                   "7. Track responder status (En Route, On Scene, Resolved) in the 'History' tab."
+    ]);
+    exit();
+}
+
+// 3. Fallback to Gemini API
+$apiKey = $_ENV['GEMINI_API_KEY'] ?? getenv('GEMINI_API_KEY') ?? '';
+
+if (empty($apiKey)) {
+    echo json_encode([
+        'success' => true,
+        'reply' => "I can guide you on app features (Reporting, Evacuation Centers, Weather, History) or provide first-aid guidance. If you are experiencing an immediate life-threatening emergency, tap the red REPORT EMERGENCY button now."
+    ]);
+    exit();
+}
+
+// Valid API endpoint
+$url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" . $apiKey;
 
 $systemInstruction = "You are the CDRRMO Emergency Virtual Assistant for Dasmariñas City. "
-    . "Your primary role is to keep citizens calm and provide immediate, actionable, step-by-step first aid or triage actions while responders are en route. "
-    . "If the user mentions an emergency or injury (e.g., stabbing, severe bleeding, fire, fracture, burns): "
-    . "1. Provide concise, high-priority first aid steps immediately. "
-    . "2. Remind them to tap the SOS button in the app if they haven't done so yet. "
-    . "3. Never tell them to 'contact someone else' without providing actionable help first. "
-    . "Keep responses clear, calm, brief, and structured with bullet points.";
+    . "Provide clear, concise, actionable advice for app usage or emergency first aid. "
+    . "Always remind citizens to tap 'REPORT EMERGENCY' in the app if they need immediate responder deployment.";
 
 $payload = [
     "contents" => [
         [
             "role" => "user",
             "parts" => [
-                ["text" => $systemInstruction . "\n\nUser Question: " . $userMessage]
+                ["text" => $systemInstruction . "\n\nCitizen Question: " . $userMessage]
             ]
         ]
     ]
@@ -53,20 +82,24 @@ curl_setopt($ch, CURLOPT_POST, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_TIMEOUT, 12);
 
 $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlErr  = curl_error($ch);
 curl_close($ch);
 
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
     $reply = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
     if ($reply) {
-        echo json_encode(['success' => true, 'reply' => $reply]);
+        echo json_encode(['success' => true, 'reply' => trim($reply)]);
         exit();
     }
 }
 
-echo json_encode(['success' => false, 'reply' => "Error - HTTP: $httpCode | cURL: $curlErr | Details: $response"]);
+// Safe fallback if external AI fails or times out
+echo json_encode([
+    'success' => true,
+    'reply' => "For immediate assistance:\n- Evacuation: Tap the Evacuation tab on the bottom bar.\n- Reporting: Tap the red REPORT EMERGENCY button.\n- Timeline: Check the History tab."
+]);
 ?>
