@@ -134,15 +134,15 @@ $systemInstruction =
   . "2. STATUS QUESTIONS: Use ONLY the live data above for report statuses. Never invent reports.\n"
   . "3. EVACUATION: Name the closest center(s) using the live data, including distance and available space.\n"
   . "4. HOW TO REPORT: Dashboard -> Report Emergency -> Snap photo -> Adjust pin -> Select type -> Add details -> Transmit SOS.\n"
-  . "5. FORMAT: Use bullet points and keep it concise (under 120 words).\n"
+  . "5. FORMAT: Use clear bullet points and provide complete, thorough instructions without cutting off sentences.\n"
   . "6. LANGUAGE: You MUST match the user's language. If the question is in Tagalog/Filipino, answer in Tagalog/Filipino. If in English, answer in English.";
 
 $payload = [
     "system_instruction" => ["parts" => [["text" => $systemInstruction]]],
     "contents" => [["role" => "user", "parts" => [["text" => $userMessage]]]],
     "generationConfig" => [
-        "temperature" => 0.3, 
-        "maxOutputTokens" => 800
+        "temperature" => 0.4, 
+        "maxOutputTokens" => 2048
     ],
     "safetySettings" => [
         [
