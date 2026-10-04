@@ -13,64 +13,93 @@ require_once 'config.php';
 
 $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
 $userMessage = trim($input['message'] ?? '');
+$userId      = trim($input['user_id'] ?? '');
+$userLat     = isset($input['latitude']) && is_numeric($input['latitude']) ? (float)$input['latitude'] : 14.3294;
+$userLng     = isset($input['longitude']) && is_numeric($input['longitude']) ? (float)$input['longitude'] : 120.9368;
 
 if (empty($userMessage)) {
     echo json_encode(['success' => false, 'reply' => 'Please enter a message.']);
     exit();
 }
 
-// 1. Evacuation Centers Intent
-if (preg_match('/(evac|evacuation|shelter|safe place)/i', $userMessage)) {
-    echo json_encode([
-        'success' => true,
-        'reply' => "To find and navigate to the nearest evacuation center:\n" .
-                   "1. Tap the 'SOS / Evacuation' icon on the bottom navigation bar.\n" .
-                   "2. The app will locate open city evacuation facilities and show their current capacity.\n" .
-                   "3. Tap on any shelter to see the fastest driving/walking route and turnaround distance from your current location."
-    ]);
-    exit();
+$historyContext = "User has not submitted any reports yet.";
+if (!empty($userId)) {
+    $stmt = $conn->prepare("
+        SELECT id, incident_type, status, barangay, created_at, 
+               COALESCE(admin_remarks, 'No admin remarks') as remarks
+        FROM incidents 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 3
+    ");
+    $stmt->bind_param("s", $userId);
+    $stmt->execute();
+    $hRes = $stmt->get_result();
+    $rows = $hRes->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    if (!empty($rows)) {
+        $historyContext = "User's Recent Emergency Incident Reports:\n";
+        foreach ($rows as $r) {
+            $historyContext .= "- Report #{$r['id']} ({$r['incident_type']}) at {$r['barangay']}: Status is '{$r['status']}'. Reported: {$r['created_at']}. Remarks: {$r['remarks']}\n";
+        }
+    }
 }
 
-// 2. Incident Reporting Intent
-if (preg_match('/(how to report|report|steps|procedure|process)/i', $userMessage)) {
-    echo json_encode([
-        'success' => true,
-        'reply' => "To report an emergency:\n" .
-                   "1. Tap 'REPORT EMERGENCY' on your Home Dashboard.\n" .
-                   "2. Take photo evidence of the scene.\n" .
-                   "3. Adjust your location pin within the 100m radar boundary if needed.\n" .
-                   "4. Select the emergency category and specific type.\n" .
-                   "5. Add landmark/street details and a brief description.\n" .
-                   "6. Tap 'TRANSMIT SOS'.\n" .
-                   "7. Track responder status (En Route, On Scene, Resolved) in the 'History' tab."
-    ]);
-    exit();
+$evacContext = "No evacuation centers on record.";
+$evacSql = "
+    SELECT name, barangay, capacity, current_occupants, latitude, longitude,
+           (6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) AS distance_km
+    FROM evacuation_centers
+    WHERE (capacity - current_occupants) > 0
+    ORDER BY distance_km ASC
+    LIMIT 3
+";
+$stmtEvac = $conn->prepare($evacSql);
+$stmtEvac->bind_param("ddd", $userLat, $userLng, $userLat);
+$stmtEvac->execute();
+$eRes = $stmtEvac->get_result();
+$evacRows = $eRes->fetch_all(MYSQLI_ASSOC);
+$stmtEvac->close();
+
+if (!empty($evacRows)) {
+    $evacContext = "Nearest Open Evacuation Centers to Citizen's current location:\n";
+    foreach ($evacRows as $e) {
+        $dist = round($e['distance_km'], 2);
+        $vacant = $e['capacity'] - $e['current_occupants'];
+        $evacContext .= "- {$e['name']} ({$e['barangay']}): {$dist} km away. Available capacity: {$vacant} / {$e['capacity']}.\n";
+    }
 }
 
-// 3. Fallback to Gemini API
 $apiKey = $_ENV['GEMINI_API_KEY'] ?? getenv('GEMINI_API_KEY') ?? '';
 
 if (empty($apiKey)) {
     echo json_encode([
         'success' => true,
-        'reply' => "I can guide you on app features (Reporting, Evacuation Centers, Weather, History) or provide first-aid guidance. If you are experiencing an immediate life-threatening emergency, tap the red REPORT EMERGENCY button now."
+        'reply' => "Here is your system information:\n\n" . $historyContext . "\n" . $evacContext
     ]);
     exit();
 }
 
-// Valid API endpoint
 $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" . $apiKey;
 
 $systemInstruction = "You are the CDRRMO Emergency Virtual Assistant for Dasmariñas City. "
-    . "Provide clear, concise, actionable advice for app usage or emergency first aid. "
-    . "Always remind citizens to tap 'REPORT EMERGENCY' in the app if they need immediate responder deployment.";
+    . "You have live access to the citizen's real-time incident reports and evacuation shelter database.\n\n"
+    . "LIVE SYSTEM CONTEXT:\n"
+    . $historyContext . "\n"
+    . $evacContext . "\n\n"
+    . "INSTRUCTIONS:\n"
+    . "1. If the user asks about the status of their report/incident, answer using their actual report data above.\n"
+    . "2. If the user asks for evacuation centers, name the closest ones from the list with distance and available capacity.\n"
+    . "3. If they ask how to report, guide them: Dashboard -> Report Emergency -> Snap photo -> Adjust pin -> Select type -> Add details -> Transmit SOS.\n"
+    . "4. Keep responses direct, helpful, and concise.";
 
 $payload = [
     "contents" => [
         [
             "role" => "user",
             "parts" => [
-                ["text" => $systemInstruction . "\n\nCitizen Question: " . $userMessage]
+                ["text" => $systemInstruction . "\n\nCitizen's Question: " . $userMessage]
             ]
         ]
     ]
@@ -97,9 +126,8 @@ if ($httpCode === 200 && $response) {
     }
 }
 
-// Safe fallback if external AI fails or times out
 echo json_encode([
     'success' => true,
-    'reply' => "For immediate assistance:\n- Evacuation: Tap the Evacuation tab on the bottom bar.\n- Reporting: Tap the red REPORT EMERGENCY button.\n- Timeline: Check the History tab."
+    'reply' => $historyContext . "\n" . $evacContext
 ]);
 ?>
