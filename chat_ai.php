@@ -11,7 +11,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once 'config.php';
 
-$input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+// Catch any PHP fatal errors and return them as JSON
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+$rawInput = file_get_contents('php://input');
+$input = json_decode($rawInput, true) ?? $_POST;
 $userMessage = trim($input['message'] ?? '');
 $userId      = trim($input['user_id'] ?? '');
 $userLat     = isset($input['latitude']) && is_numeric($input['latitude']) ? (float)$input['latitude'] : 14.3294;
@@ -22,65 +27,92 @@ if (empty($userMessage)) {
     exit();
 }
 
-$historyContext = "User has not submitted any reports yet.";
+// 1. Fetch User Incident History
+$historyContext = "User has no recorded incident reports.";
 if (!empty($userId)) {
-    $stmt = $conn->prepare("
-        SELECT id, incident_type, status, barangay, created_at, 
-               COALESCE(admin_remarks, 'No admin remarks') as remarks
-        FROM incidents 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 3
-    ");
-    $stmt->bind_param("s", $userId);
-    $stmt->execute();
-    $hRes = $stmt->get_result();
-    $rows = $hRes->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
+    try {
+        $stmt = $conn->prepare("
+            SELECT id, incident_type, status, barangay, created_at, 
+                   COALESCE(admin_remarks, 'No remarks logged.') as remarks
+            FROM incidents 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 3
+        ");
+        if ($stmt) {
+            $stmt->bind_param("s", $userId);
+            $stmt->execute();
+            $hRes = $stmt->get_result();
+            $rows = $hRes ? $hRes->fetch_all(MYSQLI_ASSOC) : [];
+            $stmt->close();
 
-    if (!empty($rows)) {
-        $historyContext = "User's Recent Emergency Incident Reports:\n";
-        foreach ($rows as $r) {
-            $historyContext .= "- Report #{$r['id']} ({$r['incident_type']}) at {$r['barangay']}: Status is '{$r['status']}'. Reported: {$r['created_at']}. Remarks: {$r['remarks']}\n";
+            if (!empty($rows)) {
+                $historyContext = "User's Recent Emergency Reports:\n";
+                foreach ($rows as $r) {
+                    $historyContext .= "- Report #{$r['id']} ({$r['incident_type']}) at Barangay {$r['barangay']}: Status is '{$r['status']}'. Reported: {$r['created_at']}. Remarks: {$r['remarks']}\n";
+                }
+            }
+        }
+    } catch (Exception $e) {
+        $historyContext = "Incident database query error.";
+    }
+}
+
+// 2. Fetch Evacuation Shelters Safely
+$evacContext = "No active evacuation centers found.";
+try {
+    $eRes = $conn->query("
+        SELECT name, barangay, capacity, COALESCE(current_occupants, 0) as current_occupants, latitude, longitude
+        FROM evacuation_centers
+        ORDER BY id ASC
+        LIMIT 5
+    ");
+
+    if ($eRes && $eRes->num_rows > 0) {
+        $evacList = [];
+        while ($row = $eRes->fetch_assoc()) {
+            $eLat = (float)($row['latitude'] ?? 0);
+            $eLng = (float)($row['longitude'] ?? 0);
+            
+            // Calculate distance in PHP to avoid SQL math failures
+            $dist = 0;
+            if ($eLat != 0 && $eLng != 0) {
+                $theta = $userLng - $eLng;
+                $dist = sin(deg2rad($userLat)) * sin(deg2rad($eLat)) + cos(deg2rad($userLat)) * cos(deg2rad($eLat)) * cos(deg2rad($theta));
+                $dist = acos(max(-1.0, min(1.0, $dist)));
+                $dist = rad2deg($dist) * 60 * 1.1515 * 1.609344; // km
+            }
+
+            $vacant = max(0, (int)$row['capacity'] - (int)$row['current_occupants']);
+            $row['calc_dist'] = round($dist, 2);
+            $row['vacant'] = $vacant;
+            $evacList[] = $row;
+        }
+
+        // Sort closest first
+        usort($evacList, fn($a, $b) => $a['calc_dist'] <=> $b['calc_dist']);
+
+        $evacContext = "Open Evacuation Centers in Dasmariñas:\n";
+        foreach (array_slice($evacList, 0, 3) as $e) {
+            $evacContext .= "- {$e['name']} ({$e['barangay']}): ~{$e['calc_dist']} km away. Available Space: {$e['vacant']} / {$e['capacity']}.\n";
         }
     }
+} catch (Exception $e) {
+    $evacContext = "Evacuation database currently unreachable.";
 }
 
-$evacContext = "No evacuation centers on record.";
-$evacSql = "
-    SELECT name, barangay, capacity, current_occupants, latitude, longitude,
-           (6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) AS distance_km
-    FROM evacuation_centers
-    WHERE (capacity - current_occupants) > 0
-    ORDER BY distance_km ASC
-    LIMIT 3
-";
-$stmtEvac = $conn->prepare($evacSql);
-$stmtEvac->bind_param("ddd", $userLat, $userLng, $userLat);
-$stmtEvac->execute();
-$eRes = $stmtEvac->get_result();
-$evacRows = $eRes->fetch_all(MYSQLI_ASSOC);
-$stmtEvac->close();
-
-if (!empty($evacRows)) {
-    $evacContext = "Nearest Open Evacuation Centers to Citizen's current location:\n";
-    foreach ($evacRows as $e) {
-        $dist = round($e['distance_km'], 2);
-        $vacant = $e['capacity'] - $e['current_occupants'];
-        $evacContext .= "- {$e['name']} ({$e['barangay']}): {$dist} km away. Available capacity: {$vacant} / {$e['capacity']}.\n";
-    }
-}
-
+// 3. Fallback Response if API Key Missing
 $apiKey = $_ENV['GEMINI_API_KEY'] ?? getenv('GEMINI_API_KEY') ?? '';
 
 if (empty($apiKey)) {
     echo json_encode([
         'success' => true,
-        'reply' => "Here is your system information:\n\n" . $historyContext . "\n" . $evacContext
+        'reply' => "Here is the latest live information from our command center:\n\n" . $evacContext . "\n" . $historyContext
     ]);
     exit();
 }
 
+// 4. Query Gemini API
 $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" . $apiKey;
 
 $systemInstruction = "You are the CDRRMO Emergency Virtual Assistant for Dasmariñas City. "
@@ -90,7 +122,7 @@ $systemInstruction = "You are the CDRRMO Emergency Virtual Assistant for Dasmari
     . $evacContext . "\n\n"
     . "INSTRUCTIONS:\n"
     . "1. If the user asks about the status of their report/incident, answer using their actual report data above.\n"
-    . "2. If the user asks for evacuation centers, name the closest ones from the list with distance and available capacity.\n"
+    . "2. If the user asks for evacuation centers, name the closest ones from the list with distance and available space.\n"
     . "3. If they ask how to report, guide them: Dashboard -> Report Emergency -> Snap photo -> Adjust pin -> Select type -> Add details -> Transmit SOS.\n"
     . "4. Keep responses direct, helpful, and concise.";
 
@@ -126,8 +158,9 @@ if ($httpCode === 200 && $response) {
     }
 }
 
+// Fallback if AI call returns rate limit or error
 echo json_encode([
     'success' => true,
-    'reply' => $historyContext . "\n" . $evacContext
+    'reply' => $evacContext . "\n" . $historyContext
 ]);
 ?>
