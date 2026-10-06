@@ -130,6 +130,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_photo') {
 // 3. Dynamic Partial Settings Update
 $conn->begin_transaction();
 try {
+    // 3a. Update Barangay
     if (isset($_POST['barangay'])) {
         $brgy = trim($_POST['barangay']);
         $stmt_b = $conn->prepare("UPDATE users SET barangay = ? WHERE id = ?");
@@ -139,6 +140,25 @@ try {
         $_SESSION['barangay'] = $brgy;
     }
 
+    // 3b. Update Responder Department (Team)
+    if (isset($_POST['department'])) {
+        $dept = trim($_POST['department']);
+        $stmt_d = $conn->prepare("UPDATE users SET department = ? WHERE id = ?");
+        $stmt_d->bind_param("si", $dept, $user_id);
+        $stmt_d->execute();
+        $stmt_d->close();
+    }
+
+    // 3c. Update Responder Online Duty Status
+    if (isset($_POST['is_online'])) {
+        $is_online = (int)$_POST['is_online'];
+        $stmt_o = $conn->prepare("UPDATE users SET is_online = ? WHERE id = ?");
+        $stmt_o->bind_param("ii", $is_online, $user_id);
+        $stmt_o->execute();
+        $stmt_o->close();
+    }
+
+    // 3d. Update Theme and Font Preferences
     $theme     = $_POST['theme'] ?? null;
     $font_size = $_POST['font_size'] ?? null;
 
