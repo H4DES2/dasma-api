@@ -1,12 +1,9 @@
 <?php
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
-while (ob_get_level() > 0) { 
-    ob_end_clean(); 
+while (ob_get_level() > 0) {
+    ob_end_clean();
 }
 
 header("Access-Control-Allow-Origin: *");
@@ -14,118 +11,142 @@ header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { 
-    http_response_code(200); 
-    exit(); 
-}
-
-// 1. Database Connection
-if (file_exists(__DIR__ . '/config.php')) {
-    require_once __DIR__ . '/config.php';
-} elseif (file_exists(__DIR__ . '/php/config.php')) {
-    require_once __DIR__ . '/php/config.php';
-} else {
-    echo json_encode(["success" => false, "message" => "Database config file missing."]);
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
     exit();
 }
 
-// 2. Ensure Table Exists
-$conn->query("CREATE TABLE IF NOT EXISTS password_resets (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    email VARCHAR(255) NOT NULL,
-    code VARCHAR(10) NOT NULL,
-    expires_at DATETIME NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_email_code (email, code)
-)");
-
-// 3. Parse Request
-$input = json_decode(file_get_contents('php://input'), true);
-$email = trim($_POST['email'] ?? $input['email'] ?? '');
-
-if (empty($email)) {
-    echo json_encode(["success" => false, "message" => "Email address is required."]);
+function respond(bool $success, string $message): void
+{
+    echo json_encode(["success" => $success, "message" => $message]);
     exit();
 }
 
-// 4. Verify User Exists
-$stmt = $conn->prepare("SELECT id, first_name FROM users WHERE email = ? LIMIT 1");
-if (!$stmt) {
-    echo json_encode(["success" => false, "message" => "Database query failed: " . $conn->error]);
-    exit();
-}
-$stmt->bind_param("s", $email);
-$stmt->execute();
-$user = $stmt->get_result()->fetch_assoc();
-$stmt->close();
+/**
+ * Sends an email through Brevo's HTTPS API (port 443).
+ * Render's free tier blocks SMTP ports (25/465/587), so PHPMailer/SMTP can't work there.
+ * Returns [true, ''] or [false, 'reason'].
+ */
+function send_mail_brevo(string $toEmail, string $toName, string $subject, string $html): array
+{
+    $apiKey = getenv('BREVO_API_KEY') ?: ($_ENV['BREVO_API_KEY'] ?? '');
+    if ($apiKey === '') {
+        error_log('send_reset_code: BREVO_API_KEY is not set');
+        return [false, 'Email service is not configured on the server.'];
+    }
 
-if (!$user) {
-    echo json_encode(["success" => false, "message" => "No account found with this email."]);
-    exit();
-}
+    $fromEmail = getenv('FROM_EMAIL') ?: ($_ENV['FROM_EMAIL'] ?? '');
+    $fromName  = getenv('FROM_NAME')  ?: ($_ENV['FROM_NAME']  ?? 'Dasma Alert');
+    if ($fromEmail === '') {
+        error_log('send_reset_code: FROM_EMAIL is not set');
+        return [false, 'Email sender is not configured on the server.'];
+    }
 
-// 5. Store Verification Code
-$code = sprintf("%06d", mt_rand(100000, 999999));
-$expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
-
-$stmt_del = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
-$stmt_del->bind_param("s", $email);
-$stmt_del->execute();
-$stmt_del->close();
-
-$stmt_ins = $conn->prepare("INSERT INTO password_resets (email, code, expires_at) VALUES (?, ?, ?)");
-$stmt_ins->bind_param("sss", $email, $code, $expires_at);
-$stmt_ins->execute();
-$stmt_ins->close();
-
-// 6. Composer Autoload Check
-$autoload_path = __DIR__ . '/vendor/autoload.php';
-if (!file_exists($autoload_path)) {
-    echo json_encode([
-        "success" => false, 
-        "message" => "vendor/autoload.php not found at: " . $autoload_path
+    $payload = json_encode([
+        'sender'      => ['name' => $fromName, 'email' => $fromEmail],
+        'to'          => [['email' => $toEmail, 'name' => $toName]],
+        'subject'     => $subject,
+        'htmlContent' => $html,
     ]);
-    exit();
-}
-require_once $autoload_path;
 
-$mail = new PHPMailer(true);
+    $ch = curl_init('https://api.brevo.com/v3/smtp/email');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
+            'accept: application/json',
+            'content-type: application/json',
+            'api-key: ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $response = curl_exec($ch);
+    $status   = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr  = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false) {
+        error_log('send_reset_code: Brevo request failed: ' . $curlErr);
+        return [false, 'Could not reach the email service. Please try again.'];
+    }
+    if ($status < 200 || $status >= 300) {
+        // Full reason (e.g. "sender not verified", "invalid key") goes to the Render logs only
+        error_log("send_reset_code: Brevo returned HTTP $status: $response");
+        return [false, 'The email service rejected the request. Please try again later.'];
+    }
+    return [true, ''];
+}
 
 try {
-    $mail->isSMTP();
-    $mail->Host       = getenv('SMTP_HOST') ?: ($_ENV['SMTP_HOST'] ?? 'smtp.gmail.com');
-    $mail->SMTPAuth   = true;
-    
-    // Reads from your .env
-    $mail->Username   = getenv('SMTP_USER') ?: ($_ENV['SMTP_USER'] ?? 'jacobbataclanortega@gmail.com');
-    $mail->Password   = getenv('SMTP_PASS') ?: ($_ENV['SMTP_PASS'] ?? '');
-    
-    // PORT 465 USES DIRECT SMTPS (SSL), NOT STARTTLS
-    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-    $mail->Port       = 465;
-    $mail->Timeout    = 15;
+    // 1. Database connection
+    if (file_exists(__DIR__ . '/config.php')) {
+        require_once __DIR__ . '/config.php';
+    } elseif (file_exists(__DIR__ . '/php/config.php')) {
+        require_once __DIR__ . '/php/config.php';
+    } else {
+        respond(false, "Database config file missing.");
+    }
+    require_once __DIR__ . '/reset_helpers.php';
 
-    // Prevent SSL handshake drops on cloud hosts & Windows
-    $mail->SMTPOptions = [
-        'ssl' => [
-            'verify_peer'       => false,
-            'verify_peer_name'  => false,
-            'allow_self_signed' => true,
-        ],
-    ];
+    // 2. Ensure table exists
+    ensure_reset_table($conn);
 
-    $from_email = getenv('FROM_EMAIL') ?: ($_ENV['FROM_EMAIL'] ?? 'jacobbataclanortega@gmail.com');
-    $from_name  = getenv('FROM_NAME') ?: ($_ENV['FROM_NAME'] ?? 'Dasma Alert');
+    // 3. Parse request
+    $input = json_decode(file_get_contents('php://input'), true);
+    $email = trim($_POST['email'] ?? $input['email'] ?? '');
 
-    $mail->setFrom($from_email, $from_name);
-    $mail->addAddress($email, $user['first_name']);
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        respond(false, "A valid email address is required.");
+    }
 
-    $mail->isHTML(true);
-    $mail->Subject = 'DasmaAlert - Password Reset Code';
-    $mail->Body    = "
+    // 4. Verify user exists
+    $stmt = $conn->prepare("SELECT id, first_name FROM users WHERE email = ? LIMIT 1");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$user) {
+        respond(false, "No account found with this email.");
+    }
+
+    // 5. Cooldown: stops people from spamming someone's inbox
+    $stmt = $conn->prepare(
+        "SELECT id FROM password_resets
+         WHERE email = ? AND created_at > (NOW() - INTERVAL 45 SECOND) LIMIT 1"
+    );
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $tooSoon = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    if ($tooSoon) {
+        respond(false, "Please wait a moment before requesting another code.");
+    }
+
+    // 6. Create + store the code (expiry is computed by MySQL so timezones can't disagree)
+    $code = (string)random_int(100000, 999999);
+
+    $stmt = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $stmt->close();
+
+    $stmt = $conn->prepare(
+        "INSERT INTO password_resets (email, code, expires_at)
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 15 MINUTE))"
+    );
+    $stmt->bind_param("ss", $email, $code);
+    $stmt->execute();
+    $stmt->close();
+
+    // 7. Send the email
+    $name = htmlspecialchars($user['first_name'], ENT_QUOTES, 'UTF-8');
+    $html = "
         <div style='font-family: Arial, sans-serif; padding: 20px; color: #333;'>
             <h2 style='color: #D32F2F;'>DasmaAlert Emergency Services</h2>
-            <p>Hello <b>" . htmlspecialchars($user['first_name']) . "</b>,</p>
+            <p>Hello <b>{$name}</b>,</p>
             <p>Your password reset verification code is:</p>
             <div style='font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #D32F2F; margin: 20px 0;'>
                 {$code}
@@ -134,10 +155,19 @@ try {
             <p style='color: #888; font-size: 12px;'>If you did not request this, please disregard this email.</p>
         </div>";
 
-    $mail->send();
-    echo json_encode(["success" => true, "message" => "Verification code sent to your email!"]);
-} catch (Exception $e) {
-    echo json_encode(["success" => false, "message" => "Mailer Error: " . $mail->ErrorInfo]);
-}
+    [$sent, $error] = send_mail_brevo($email, $user['first_name'], 'DasmaAlert - Password Reset Code', $html);
 
-$conn->close();
+    if (!$sent) {
+        // Remove the unused code so the cooldown doesn't block an immediate retry
+        $stmt = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
+        $stmt->bind_param("s", $email);
+        $stmt->execute();
+        $stmt->close();
+        respond(false, $error);
+    }
+
+    respond(true, "Verification code sent to your email!");
+} catch (Throwable $e) {
+    error_log('send_reset_code: ' . $e->getMessage());
+    respond(false, "Server error. Please try again.");
+}
