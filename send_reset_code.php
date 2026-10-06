@@ -1,14 +1,40 @@
 <?php
-while (ob_get_level() > 0) { ob_end_clean(); }
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+while (ob_get_level() > 0) { 
+    ob_end_clean(); 
+}
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit(); }
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { 
+    http_response_code(200); 
+    exit(); 
+}
 
-require_once __DIR__ . '/config.php'; // Adjust path if needed
+// 1. Database Connection
+if (file_exists(__DIR__ . '/config.php')) {
+    require_once __DIR__ . '/config.php';
+} elseif (file_exists(__DIR__ . '/php/config.php')) {
+    require_once __DIR__ . '/php/config.php';
+} else {
+    echo json_encode(["success" => false, "message" => "Database config file missing."]);
+    exit();
+}
 
-// Auto-create the password_resets table if it doesn't exist
+// 2. Load PHPMailer via Composer Autoload
+$autoload_path = __DIR__ . '/vendor/autoload.php';
+if (!file_exists($autoload_path)) {
+    echo json_encode(["success" => false, "message" => "Composer autoloader missing at $autoload_path"]);
+    exit();
+}
+require_once $autoload_path;
+
+// 3. Ensure Table Exists
 $conn->query("CREATE TABLE IF NOT EXISTS password_resets (
     id INT AUTO_INCREMENT PRIMARY KEY,
     email VARCHAR(255) NOT NULL,
@@ -18,6 +44,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS password_resets (
     INDEX idx_email_code (email, code)
 )");
 
+// 4. Parse Request
 $input = json_decode(file_get_contents('php://input'), true);
 $email = trim($_POST['email'] ?? $input['email'] ?? '');
 
@@ -26,7 +53,7 @@ if (empty($email)) {
     exit();
 }
 
-// Check if user exists (assuming your users table has an email column)
+// 5. Look up User
 $stmt = $conn->prepare("SELECT id, first_name FROM users WHERE email = ? LIMIT 1");
 $stmt->bind_param("s", $email);
 $stmt->execute();
@@ -34,34 +61,60 @@ $user = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
 if (!$user) {
-    // Return success anyway to prevent email enumeration attacks
-    echo json_encode(["success" => true, "message" => "If an account exists, a code was sent."]);
+    echo json_encode(["success" => false, "message" => "No account found with this email."]);
     exit();
 }
 
-// Generate 6-digit code
+// 6. Generate Verification Code & Expiry (15 mins)
 $code = sprintf("%06d", mt_rand(100000, 999999));
 $expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
 
-// Invalidate old codes for this email
-$stmt = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
-$stmt->bind_param("s", $email);
-$stmt->execute();
-$stmt->close();
+$stmt_del = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
+$stmt_del->bind_param("s", $email);
+$stmt_del->execute();
+$stmt_del->close();
 
-// Insert new code
-$stmt = $conn->prepare("INSERT INTO password_resets (email, code, expires_at) VALUES (?, ?, ?)");
-$stmt->bind_param("sss", $email, $code, $expires_at);
-$stmt->execute();
-$stmt->close();
+$stmt_ins = $conn->prepare("INSERT INTO password_resets (email, code, expires_at) VALUES (?, ?, ?)");
+$stmt_ins->bind_param("sss", $email, $code, $expires_at);
+$stmt_ins->execute();
+$stmt_ins->close();
 
-// Send Email (Replace with PHPMailer if your server blocks standard mail())
-$subject = "DasmaAlert - Password Reset Code";
-$message = "Hello {$user['first_name']},\n\nYour password reset code is: {$code}\n\nThis code will expire in 15 minutes.\n\nIf you did not request this, please ignore this email.";
-$headers = "From: noreply@dasmaalert.com";
+// 7. Dispatch via PHPMailer using Gmail SMTP
+$mail = new PHPMailer(true);
 
-@mail($email, $subject, $message, $headers);
+try {
+    $mail->isSMTP();
+    $mail->Host       = 'smtp.gmail.com';
+    $mail->SMTPAuth   = true;
+    
+    // REPLACE WITH YOUR GMAIL AND 16-CHARACTER APP PASSWORD
+    $mail->Username   = 'YOUR_GMAIL@gmail.com';
+    $mail->Password   = 'YOUR_16_DIGIT_APP_PASSWORD'; 
+    
+    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+    $mail->Port       = 587;
 
-echo json_encode(["success" => true, "message" => "Verification code sent to your email."]);
+    $mail->setFrom('YOUR_GMAIL@gmail.com', 'DasmaAlert CDRRMO');
+    $mail->addAddress($email, $user['first_name']);
+
+    $mail->isHTML(true);
+    $mail->Subject = 'DasmaAlert - Password Reset Code';
+    $mail->Body    = "
+        <div style='font-family: Arial, sans-serif; padding: 20px; color: #333;'>
+            <h2 style='color: #D32F2F;'>DasmaAlert Emergency Services</h2>
+            <p>Hello <b>" . htmlspecialchars($user['first_name']) . "</b>,</p>
+            <p>Your password reset verification code is:</p>
+            <div style='font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #D32F2F; margin: 20px 0;'>
+                {$code}
+            </div>
+            <p>This code will expire in <b>15 minutes</b>.</p>
+            <p style='color: #888; font-size: 12px;'>If you did not request this, please disregard this email.</p>
+        </div>";
+
+    $mail->send();
+    echo json_encode(["success" => true, "message" => "Verification code sent to your email!"]);
+} catch (Exception $e) {
+    echo json_encode(["success" => false, "message" => "Failed to deliver email: " . $mail->ErrorInfo]);
+}
+
 $conn->close();
-?>
