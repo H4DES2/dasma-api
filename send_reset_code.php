@@ -2,6 +2,9 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
 while (ob_get_level() > 0) { 
     ob_end_clean(); 
 }
@@ -26,15 +29,7 @@ if (file_exists(__DIR__ . '/config.php')) {
     exit();
 }
 
-// 2. Load PHPMailer via Composer Autoload
-$autoload_path = __DIR__ . '/vendor/autoload.php';
-if (!file_exists($autoload_path)) {
-    echo json_encode(["success" => false, "message" => "Composer autoloader missing at $autoload_path"]);
-    exit();
-}
-require_once $autoload_path;
-
-// 3. Ensure Table Exists
+// 2. Ensure Table Exists
 $conn->query("CREATE TABLE IF NOT EXISTS password_resets (
     id INT AUTO_INCREMENT PRIMARY KEY,
     email VARCHAR(255) NOT NULL,
@@ -44,7 +39,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS password_resets (
     INDEX idx_email_code (email, code)
 )");
 
-// 4. Parse Request
+// 3. Parse Request
 $input = json_decode(file_get_contents('php://input'), true);
 $email = trim($_POST['email'] ?? $input['email'] ?? '');
 
@@ -53,8 +48,12 @@ if (empty($email)) {
     exit();
 }
 
-// 5. Look up User
+// 4. Verify User Exists
 $stmt = $conn->prepare("SELECT id, first_name FROM users WHERE email = ? LIMIT 1");
+if (!$stmt) {
+    echo json_encode(["success" => false, "message" => "Database query failed: " . $conn->error]);
+    exit();
+}
 $stmt->bind_param("s", $email);
 $stmt->execute();
 $user = $stmt->get_result()->fetch_assoc();
@@ -65,7 +64,7 @@ if (!$user) {
     exit();
 }
 
-// 6. Generate Verification Code & Expiry (15 mins)
+// 5. Store Verification Code
 $code = sprintf("%06d", mt_rand(100000, 999999));
 $expires_at = date('Y-m-d H:i:s', strtotime('+15 minutes'));
 
@@ -79,7 +78,18 @@ $stmt_ins->bind_param("sss", $email, $code, $expires_at);
 $stmt_ins->execute();
 $stmt_ins->close();
 
-// 7. Dispatch via PHPMailer using Gmail SMTP
+// 6. Composer Autoload Check
+$autoload_path = __DIR__ . '/vendor/autoload.php';
+if (!file_exists($autoload_path)) {
+    echo json_encode([
+        "success" => false, 
+        "message" => "vendor/autoload.php not found at: " . $autoload_path
+    ]);
+    exit();
+}
+require_once $autoload_path;
+
+// 7. Dispatch Mail with PHPMailer
 $mail = new PHPMailer(true);
 
 try {
@@ -87,12 +97,22 @@ try {
     $mail->Host       = 'smtp.gmail.com';
     $mail->SMTPAuth   = true;
     
-    // REPLACE WITH YOUR GMAIL AND 16-CHARACTER APP PASSWORD
+    // Set your sender address & 16-character Google App Password (remove spaces)
     $mail->Username   = 'YOUR_GMAIL@gmail.com';
-    $mail->Password   = 'YOUR_16_DIGIT_APP_PASSWORD'; 
+    $mail->Password   = 'YOUR_16_DIGIT_APP_PASSWORD';
     
     $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
     $mail->Port       = 587;
+    $mail->Timeout    = 10; // Prevent indefinite hang
+
+    // Bypass local OpenSSL verification failure on XAMPP/Windows
+    $mail->SMTPOptions = [
+        'ssl' => [
+            'verify_peer'       => false,
+            'verify_peer_name'  => false,
+            'allow_self_signed' => true,
+        ],
+    ];
 
     $mail->setFrom('YOUR_GMAIL@gmail.com', 'DasmaAlert CDRRMO');
     $mail->addAddress($email, $user['first_name']);
@@ -107,14 +127,13 @@ try {
             <div style='font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #D32F2F; margin: 20px 0;'>
                 {$code}
             </div>
-            <p>This code will expire in <b>15 minutes</b>.</p>
-            <p style='color: #888; font-size: 12px;'>If you did not request this, please disregard this email.</p>
+            <p>This code expires in <b>15 minutes</b>.</p>
         </div>";
 
     $mail->send();
-    echo json_encode(["success" => true, "message" => "Verification code sent to your email!"]);
+    echo json_encode(["success" => true, "message" => "Verification code sent to your email."]);
 } catch (Exception $e) {
-    echo json_encode(["success" => false, "message" => "Failed to deliver email: " . $mail->ErrorInfo]);
+    echo json_encode(["success" => false, "message" => "Mailer Error: " . $mail->ErrorInfo]);
 }
 
 $conn->close();
