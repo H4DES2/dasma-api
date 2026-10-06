@@ -89,23 +89,23 @@ if (!file_exists($autoload_path)) {
 }
 require_once $autoload_path;
 
-// 7. Dispatch Mail with PHPMailer
 $mail = new PHPMailer(true);
 
 try {
     $mail->isSMTP();
-    $mail->Host       = 'smtp.gmail.com';
+    $mail->Host       = getenv('SMTP_HOST') ?: ($_ENV['SMTP_HOST'] ?? 'smtp.gmail.com');
     $mail->SMTPAuth   = true;
     
-    // Set your sender address & 16-character Google App Password (remove spaces)
-    $mail->Username   = 'YOUR_GMAIL@gmail.com';
-    $mail->Password   = 'YOUR_16_DIGIT_APP_PASSWORD';
+    // Reads from your .env
+    $mail->Username   = getenv('SMTP_USER') ?: ($_ENV['SMTP_USER'] ?? 'jacobbataclanortega@gmail.com');
+    $mail->Password   = getenv('SMTP_PASS') ?: ($_ENV['SMTP_PASS'] ?? '');
     
-    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-    $mail->Port       = 587;
-    $mail->Timeout    = 10; // Prevent indefinite hang
+    // PORT 465 USES DIRECT SMTPS (SSL), NOT STARTTLS
+    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+    $mail->Port       = 465;
+    $mail->Timeout    = 15;
 
-    // Bypass local OpenSSL verification failure on XAMPP/Windows
+    // Prevent SSL handshake drops on cloud hosts & Windows
     $mail->SMTPOptions = [
         'ssl' => [
             'verify_peer'       => false,
@@ -114,7 +114,10 @@ try {
         ],
     ];
 
-    $mail->setFrom('YOUR_GMAIL@gmail.com', 'DasmaAlert CDRRMO');
+    $from_email = getenv('FROM_EMAIL') ?: ($_ENV['FROM_EMAIL'] ?? 'jacobbataclanortega@gmail.com');
+    $from_name  = getenv('FROM_NAME') ?: ($_ENV['FROM_NAME'] ?? 'Dasma Alert');
+
+    $mail->setFrom($from_email, $from_name);
     $mail->addAddress($email, $user['first_name']);
 
     $mail->isHTML(true);
@@ -128,10 +131,11 @@ try {
                 {$code}
             </div>
             <p>This code expires in <b>15 minutes</b>.</p>
+            <p style='color: #888; font-size: 12px;'>If you did not request this, please disregard this email.</p>
         </div>";
 
     $mail->send();
-    echo json_encode(["success" => true, "message" => "Verification code sent to your email."]);
+    echo json_encode(["success" => true, "message" => "Verification code sent to your email!"]);
 } catch (Exception $e) {
     echo json_encode(["success" => false, "message" => "Mailer Error: " . $mail->ErrorInfo]);
 }
