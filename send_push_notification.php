@@ -1,12 +1,22 @@
 <?php
 
 function getFirebaseAccessToken(): string {
-    $serviceAccountPath = __DIR__ . '/service-account.json';
-    if (!file_exists($serviceAccountPath)) {
-        return '';
+    $sa = null;
+
+    // 1. Check environment variable first (Render / Production)
+    $envCredentials = getenv('FIREBASE_CREDENTIALS') ?: ($_ENV['FIREBASE_CREDENTIALS'] ?? null);
+    if (!empty($envCredentials)) {
+        $sa = json_decode($envCredentials, true);
     }
 
-    $sa = json_decode(file_get_contents($serviceAccountPath), true);
+    // 2. Fall back to local file (Local Development)
+    if (!$sa) {
+        $serviceAccountPath = __DIR__ . '/service-account.json';
+        if (file_exists($serviceAccountPath)) {
+            $sa = json_decode(file_get_contents($serviceAccountPath), true);
+        }
+    }
+
     if (!$sa || empty($sa['private_key']) || empty($sa['client_email'])) {
         return '';
     }
