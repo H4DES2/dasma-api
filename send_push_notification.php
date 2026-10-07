@@ -1,36 +1,47 @@
 <?php
-// Function to send FCM alert to specific users or all responders
-function sendPushNotification($server_jwt_access_token, $project_id, $device_token, $title, $body, $data = []) {
-    $url = "https://fcm.googleapis.com/v1/projects/{$project_id}/messages:send";
 
+function getFirebaseAccessToken(): string {
+    $serviceAccountPath = __DIR__ . '/service-account.json';
+    if (!file_exists($serviceAccountPath)) {
+        return '';
+    }
+
+    $sa = json_decode(file_get_contents($serviceAccountPath), true);
+    if (!$sa || empty($sa['private_key']) || empty($sa['client_email'])) {
+        return '';
+    }
+
+    $now = time();
+    $header = ['alg' => 'RS256', 'typ' => 'JWT'];
     $payload = [
-        "message" => [
-            "token" => $device_token,
-            "notification" => [
-                "title" => $title,
-                "body"  => $body
-            ],
-            "data" => array_map('strval', $data),
-            "android" => [
-                "priority" => "HIGH",
-                "notification" => [
-                    "channel_id" => "emergency_alerts",
-                    "sound" => "default"
-                ]
-            ]
-        ]
+        'iss'   => $sa['client_email'],
+        'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
+        'aud'   => 'https://oauth2.googleapis.com/token',
+        'iat'   => $now,
+        'exp'   => $now + 3600
     ];
 
-    $ch = curl_init($url);
+    $b64 = function($data) {
+        return rtrim(strtr(base64_encode(json_encode($data)), '+/', '-_'), '=');
+    };
+
+    $unsignedJwt = $b64($header) . '.' . $b64($payload);
+    $signature = '';
+    openssl_sign($unsignedJwt, $signature, $sa['private_key'], OPENSSL_ALGO_SHA256);
+    $signedJwt = $unsignedJwt . '.' . rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
+
+    $ch = curl_init('https://oauth2.googleapis.com/token');
     curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Authorization: Bearer " . $server_jwt_access_token,
-        "Content-Type: application/json; UTF-8"
-    ]);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+        'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        'assertion'  => $signedJwt
+    ]));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+
     $response = curl_exec($ch);
     curl_close($ch);
 
-    return json_decode($response, true);
+    $data = json_decode($response, true);
+    return $data['access_token'] ?? '';
 }
