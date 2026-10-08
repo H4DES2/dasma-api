@@ -9,27 +9,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit();
 
 require_once __DIR__ . '/config.php';
 
-$input = json_decode(file_get_contents('php://input'), true);
-$user_id = (int)($_POST['user_id'] ?? $input['user_id'] ?? 0);
-$token = trim($_POST['token'] ?? $input['token'] ?? '');
+$input    = json_decode(file_get_contents('php://input'), true);
+$user_id  = (int)($_POST['user_id'] ?? $input['user_id'] ?? 0);
+$token    = trim($_POST['token'] ?? $input['token'] ?? '');
 $platform = trim($_POST['platform'] ?? $input['platform'] ?? 'android');
 
-if ($user_id <= 0 || empty($token)) {
-    echo json_encode(["success" => false, "message" => "Missing user_id or device token."]);
+if (!in_array($platform, ['android', 'ios', 'web'], true)) {
+    $platform = 'android';
+}
+
+if ($user_id <= 0 || $token === '' || strlen($token) > 500) {
+    echo json_encode(["success" => false, "message" => "Invalid user_id or device token."]);
     exit();
 }
 
 $stmt = $conn->prepare("
     INSERT INTO user_device_tokens (user_id, device_token, platform)
-    VALUES (?, ?, ?)
-    ON DUPLICATE KEY UPDATE updated_at = NOW()
+    VALUES (?, ?, ?) AS new
+    ON DUPLICATE KEY UPDATE user_id = new.user_id, platform = new.platform, updated_at = NOW()
 ");
 $stmt->bind_param("iss", $user_id, $token, $platform);
 
 if ($stmt->execute()) {
     echo json_encode(["success" => true, "message" => "Device token registered."]);
 } else {
-    echo json_encode(["success" => false, "message" => "Failed to save token: " . $conn->error]);
+    error_log('save_device_token: ' . $conn->error);
+    echo json_encode(["success" => false, "message" => "Failed to save token."]);
 }
 
 $stmt->close();
