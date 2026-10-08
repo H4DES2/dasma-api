@@ -78,23 +78,23 @@ function sendPushNotification(string $accessToken, string $projectId, string $de
     }
 
     $payload = [
-        'message' => [
-            'token' => $deviceToken,
-            'notification' => [
-                'title' => $title,
-                'body'  => $body,
-            ],
-            'android' => [
-                'priority' => 'HIGH',
-                'notification' => [
-                    'channel_id' => 'emergency_alerts',
-                    'sound'      => 'default',
-                    'priority'   => 'HIGH',
-                ],
-            ],
-            'data' => $stringData,
+    'message' => [
+        'token' => $deviceToken,
+        'notification' => [
+            'title' => $title,
+            'body'  => $body,
         ],
-    ];
+        'android' => [
+            'priority' => 'HIGH',
+            'notification' => [
+                'channel_id'            => 'emergency_alerts',
+                'sound'                 => 'default',
+                'notification_priority' => 'PRIORITY_MAX',
+            ],
+        ],
+        'data' => $stringData,
+    ],
+];
 
     $url = "https://fcm.googleapis.com/v1/projects/{$projectId}/messages:send";
 
