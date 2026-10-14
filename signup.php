@@ -54,8 +54,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email    = trim($_POST['email'] ?? '');
     $mobile   = trim($_POST['mobile'] ?? ''); 
     $password = $_POST['password'] ?? '';
+    $barangay = trim($_POST['barangay'] ?? '');
 
-    if (empty($fname) || empty($username) || empty($email) || empty($mobile) || empty($password)) {
+    // Normalize alias
+    if (strcasecmp($barangay, 'Burol Main') === 0) {
+        $barangay = 'Burol';
+    }
+
+    if (empty($fname) || empty($username) || empty($email) || empty($mobile) || empty($password) || empty($barangay)) {
         echo json_encode(["status" => "error", "success" => false, "message" => "Missing required fields."]);
         exit();
     }
@@ -63,13 +69,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $hashed_password = password_hash($password, PASSWORD_DEFAULT);
     $otp_code = (string)rand(100000, 999999);
 
-    $sql = "INSERT INTO users (first_name, last_name, username, email, password, role, status, otp_code) 
-            VALUES (?, ?, ?, ?, ?, 'user', 'Pending', ?)"; 
+    $sql = "INSERT INTO users (first_name, last_name, username, email, password, role, status, otp_code, barangay) 
+            VALUES (?, ?, ?, ?, ?, 'user', 'Pending', ?, ?)"; 
             
     $stmt = $conn->prepare($sql);
     
     if ($stmt) {
-        $stmt->bind_param("ssssss", $fname, $lname, $username, $email, $hashed_password, $otp_code);
+        $stmt->bind_param("sssssss", $fname, $lname, $username, $email, $hashed_password, $otp_code, $barangay);
         
         try {
             $stmt->execute();
@@ -112,8 +118,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         echo json_encode(["status" => "error", "success" => false, "message" => "Query prepare failed: " . $conn->error]);
     }
-} else {
-    echo json_encode(["status" => "error", "success" => false, "message" => "Invalid request method."]);
 }
 
 $conn->close();
