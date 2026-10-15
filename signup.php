@@ -66,14 +66,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     }
 
+    // Strict 11-digit check starting with 09
+    if (!preg_match('/^09[0-9]{9}$/', $mobile)) {
+        echo json_encode([
+            "status"  => "error", 
+            "success" => false, 
+            "message" => "Mobile number must be exactly 11 digits starting with 09."
+        ]);
+        exit();
+    }
+
     $hashed_password = password_hash($password, PASSWORD_DEFAULT);
     $otp_code = (string)rand(100000, 999999);
+    $fullName = trim("$fname $lname");
 
+    // 1. Check if username or email already exists in users
+    $chk = $conn->prepare("SELECT id, status FROM users WHERE username = ? OR email = ? LIMIT 1");
+    if (!$chk) {
+        echo json_encode(["status" => "error", "success" => false, "message" => "Query prepare failed: " . $conn->error]);
+        exit();
+    }
+
+    $chk->bind_param("ss", $username, $email);
+    $chk->execute();
+    $existing = $chk->get_result()->fetch_assoc();
+    $chk->close();
+
+    if ($existing) {
+        // Account exists: check if it is still unverified (Pending)
+        if (strcasecmp($existing['status'], 'Pending') === 0) {
+            $user_id = (int)$existing['id'];
+
+            // Update pending account with the latest details and a new OTP
+            $upd = $conn->prepare("UPDATE users SET first_name=?, last_name=?, username=?, email=?, password=?, otp_code=?, barangay=? WHERE id=?");
+            $upd->bind_param("sssssssi", $fname, $lname, $username, $email, $hashed_password, $otp_code, $barangay, $user_id);
+            $upd->execute();
+            $upd->close();
+
+            // Update user profile phone number
+            $p_stmt = $conn->prepare("INSERT INTO user_profiles (user_id, phone_number) VALUES (?, ?) ON DUPLICATE KEY UPDATE phone_number = VALUES(phone_number)");
+            if ($p_stmt) {
+                $p_stmt->bind_param("is", $user_id, $mobile);
+                $p_stmt->execute();
+                $p_stmt->close();
+            }
+
+            // Dispatch fresh OTP email
+            $emailSent = sendBrevoOtpEmail($email, $fullName, $otp_code);
+
+            echo json_encode([
+                "status"  => "success",
+                "success" => true,
+                "message" => $emailSent 
+                    ? "Pending account updated! A new 6-digit code has been dispatched to your email." 
+                    : "Account updated, but failed to deliver code. Please tap Resend Code.",
+                "otp"     => $otp_code
+            ]);
+            exit();
+        } else {
+            // Already verified/active account
+            echo json_encode([
+                "status"  => "error", 
+                "success" => false, 
+                "message" => "Username or Email already taken."
+            ]);
+            exit();
+        }
+    }
+
+    // 2. New registration
     $sql = "INSERT INTO users (first_name, last_name, username, email, password, role, status, otp_code, barangay) 
             VALUES (?, ?, ?, ?, ?, 'user', 'Pending', ?, ?)"; 
             
     $stmt = $conn->prepare($sql);
-    
     if ($stmt) {
         $stmt->bind_param("sssssss", $fname, $lname, $username, $email, $hashed_password, $otp_code, $barangay);
         
@@ -88,8 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $profile_stmt->close();
             }
             
-            // Dispatch OTP via Brevo HTTPS API (Port 443)
-            $fullName = trim("$fname $lname");
+            // Dispatch OTP via Brevo HTTPS API
             $emailSent = sendBrevoOtpEmail($email, $fullName, $otp_code);
 
             if ($emailSent) {
@@ -108,16 +172,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
         } catch (mysqli_sql_exception $e) {
-            if ($e->getCode() == 1062) { 
-                echo json_encode(["status" => "error", "success" => false, "message" => "Username or Email already taken."]);
-            } else {
-                echo json_encode(["status" => "error", "success" => false, "message" => "DB Error: " . $e->getMessage()]);
-            }
+            echo json_encode(["status" => "error", "success" => false, "message" => "DB Error: " . $e->getMessage()]);
         }
         $stmt->close();
     } else {
         echo json_encode(["status" => "error", "success" => false, "message" => "Query prepare failed: " . $conn->error]);
     }
+} else {
+    echo json_encode(["status" => "error", "success" => false, "message" => "Invalid request method."]);
 }
 
 $conn->close();
