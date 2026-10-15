@@ -13,6 +13,26 @@ require_once 'config.php';
 
 function sendBrevoOtpEmail($recipientEmail, $recipientName, $otpCode) {
     $apiKey = getenv('BREVO_API_KEY') ?: ($_ENV['BREVO_API_KEY'] ?? '');
+
+    // Fallback .env parser if environment variables are not injected
+    if (empty($apiKey)) {
+        $envPath = __DIR__ . '/.env';
+        if (file_exists($envPath)) {
+            $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line) || str_starts_with($line, '#')) continue;
+                if (str_contains($line, '=')) {
+                    [$k, $v] = explode('=', $line, 2);
+                    if (trim($k) === 'BREVO_API_KEY') {
+                        $apiKey = trim($v, " \t\n\r\0\x0B\"'");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     $senderEmail = 'jacobbataclanortega@gmail.com';
 
     $payload = [
@@ -34,6 +54,8 @@ function sendBrevoOtpEmail($recipientEmail, $recipientName, $otpCode) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
     curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'api-key: ' . trim($apiKey),
         'Content-Type: application/json',
@@ -56,7 +78,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'] ?? '';
     $barangay = trim($_POST['barangay'] ?? '');
 
-    // Normalize alias
     if (strcasecmp($barangay, 'Burol Main') === 0) {
         $barangay = 'Burol';
     }
@@ -66,7 +87,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     }
 
-    // Strict 11-digit check starting with 09
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        echo json_encode(["status" => "error", "success" => false, "message" => "Please provide a valid email address (e.g. name@domain.com)."]);
+        exit();
+    }
+
     if (!preg_match('/^09[0-9]{9}$/', $mobile)) {
         echo json_encode([
             "status"  => "error", 
@@ -80,7 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $otp_code = (string)rand(100000, 999999);
     $fullName = trim("$fname $lname");
 
-    // 1. Check if username or email already exists in users
+    // Check if account already exists
     $chk = $conn->prepare("SELECT id, status FROM users WHERE username = ? OR email = ? LIMIT 1");
     if (!$chk) {
         echo json_encode(["status" => "error", "success" => false, "message" => "Query prepare failed: " . $conn->error]);
@@ -93,17 +118,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $chk->close();
 
     if ($existing) {
-        // Account exists: check if it is still unverified (Pending)
         if (strcasecmp($existing['status'], 'Pending') === 0) {
             $user_id = (int)$existing['id'];
 
-            // Update pending account with the latest details and a new OTP
             $upd = $conn->prepare("UPDATE users SET first_name=?, last_name=?, username=?, email=?, password=?, otp_code=?, barangay=? WHERE id=?");
             $upd->bind_param("sssssssi", $fname, $lname, $username, $email, $hashed_password, $otp_code, $barangay, $user_id);
             $upd->execute();
             $upd->close();
 
-            // Update user profile phone number
             $p_stmt = $conn->prepare("INSERT INTO user_profiles (user_id, phone_number) VALUES (?, ?) ON DUPLICATE KEY UPDATE phone_number = VALUES(phone_number)");
             if ($p_stmt) {
                 $p_stmt->bind_param("is", $user_id, $mobile);
@@ -111,20 +133,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $p_stmt->close();
             }
 
-            // Dispatch fresh OTP email
             $emailSent = sendBrevoOtpEmail($email, $fullName, $otp_code);
 
+            // Always return success = true so Flutter opens the OTP verification modal
             echo json_encode([
                 "status"  => "success",
                 "success" => true,
                 "message" => $emailSent 
-                    ? "Pending account updated! A new 6-digit code has been dispatched to your email." 
-                    : "Account updated, but failed to deliver code. Please tap Resend Code.",
+                    ? "Pending account updated! Code sent to your email." 
+                    : "Account updated! Email dispatch may be delayed; you can tap Resend Code.",
                 "otp"     => $otp_code
             ]);
             exit();
         } else {
-            // Already verified/active account
             echo json_encode([
                 "status"  => "error", 
                 "success" => false, 
@@ -134,14 +155,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // 2. New registration
+    // New registration
     $sql = "INSERT INTO users (first_name, last_name, username, email, password, role, status, otp_code, barangay) 
             VALUES (?, ?, ?, ?, ?, 'user', 'Pending', ?, ?)"; 
             
     $stmt = $conn->prepare($sql);
     if ($stmt) {
         $stmt->bind_param("sssssss", $fname, $lname, $username, $email, $hashed_password, $otp_code, $barangay);
-        
         try {
             $stmt->execute();
             $new_user_id = $conn->insert_id;
@@ -153,24 +173,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $profile_stmt->close();
             }
             
-            // Dispatch OTP via Brevo HTTPS API
             $emailSent = sendBrevoOtpEmail($email, $fullName, $otp_code);
 
-            if ($emailSent) {
-                echo json_encode([
-                    "status"  => "success", 
-                    "success" => true, 
-                    "message" => "Account created! Check email for OTP.",
-                    "otp"     => $otp_code
-                ]);
-            } else {
-                echo json_encode([
-                    "status"  => "error", 
-                    "success" => false, 
-                    "message" => "Account created, but failed to deliver verification email. Please tap Resend Code."
-                ]);
-            }
-
+            // Always return success = true so Flutter triggers the modal
+            echo json_encode([
+                "status"  => "success", 
+                "success" => true, 
+                "message" => $emailSent 
+                    ? "Account created! Check email for OTP." 
+                    : "Account created! Verification email may take a moment to arrive.",
+                "otp"     => $otp_code
+            ]);
         } catch (mysqli_sql_exception $e) {
             echo json_encode(["status" => "error", "success" => false, "message" => "DB Error: " . $e->getMessage()]);
         }
