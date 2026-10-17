@@ -126,16 +126,19 @@ if ($apiKey === '') {
 $model = getenv('GEMINI_MODEL') ?: 'gemini-2.5-flash';
 $url   = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
 
+// In chat_ai.php, replace $systemInstruction and the Gemini response block:
+
 $systemInstruction =
     "You are the CDRRMO Emergency Virtual Assistant for Dasmariñas City. You have two main duties: providing direct emergency/first-aid guidance, and checking live app data.\n\n"
   . "LIVE DATA:\n{$historyContext}\n{$evacContext}\n\n"
   . "RULES:\n"
-  . "1. FIRST AID & EMERGENCIES: Always provide immediate, actionable, step-by-step first aid or survival instructions. Do not refuse to answer. After providing the steps, briefly remind them to tap the SOS button or contact medical professionals.\n"
+  . "1. FIRST AID & EMERGENCIES: Always provide immediate, actionable, step-by-step first aid or survival instructions. Do not refuse to answer. After providing the steps, remind them that they can directly tap the 'REPORT INCIDENT NOW' button below.\n"
   . "2. STATUS QUESTIONS: Use ONLY the live data above for report statuses. Never invent reports.\n"
   . "3. EVACUATION: Name the closest center(s) using the live data, including distance and available space.\n"
-  . "4. HOW TO REPORT: Dashboard -> Report Emergency -> Snap photo -> Adjust pin -> Select type -> Add details -> Transmit SOS.\n"
-  . "5. FORMAT: Use clear bullet points and provide complete, thorough instructions without cutting off sentences.\n"
-  . "6. LANGUAGE: You MUST match the user's language. If the question is in Tagalog/Filipino, answer in Tagalog/Filipino. If in English, answer in English.";
+  . "4. HOW TO REPORT: If asked how to report an incident, give these exact steps: 1. Tap the 'REPORT INCIDENT NOW' button below (or go to Dashboard -> 'REPORT EMERGENCY') -> 2. Attach or capture a photo -> 3. Confirm your GPS location on the map -> 4. Select the emergency type -> 5. Tap 'TRANSMIT SOS'.\n"
+  . "5. FORMATTING: Use clean bullet points ('• ') or numbers ('1. ', '2. '). Avoid messy raw asterisks.\n"
+  . "6. LANGUAGE: Match the user's language. If Tagalog/Filipino, answer in Tagalog/Filipino. If English, answer in English.\n"
+  . "7. SHORTCUT TRIGGER: If the user is asking how to report an incident, or is reporting an active emergency / asking for first aid, append '[ACTION:REPORT_BUTTON]' at the very end of your response.";
 
 $payload = [
     "system_instruction" => ["parts" => [["text" => $systemInstruction]]],
@@ -181,7 +184,23 @@ if ($httpCode === 200 && $response) {
     $data  = json_decode($response, true);
     $reply = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
     if ($reply) {
-        echo json_encode(['success' => true, 'reply' => trim($reply)]);
+        $showReportBtn = false;
+        if (strpos($reply, '[ACTION:REPORT_BUTTON]') !== false) {
+            $showReportBtn = true;
+            $reply = str_replace('[ACTION:REPORT_BUTTON]', '', $reply);
+        }
+
+        // Fallback keyword trigger
+        $triggerRegex = '/(report|mag-report|paano.*report|how.*to.*report|emergency|tulong|saklolo|nasaksak|aksidente|accident|sunog|baha)/iu';
+        if (preg_match($triggerRegex, $userMessage) || preg_match($triggerRegex, $reply)) {
+            $showReportBtn = true;
+        }
+
+        echo json_encode([
+            'success' => true,
+            'reply' => trim($reply),
+            'show_report_btn' => $showReportBtn
+        ]);
         exit();
     }
 }
