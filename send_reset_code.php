@@ -135,7 +135,7 @@ try {
 
     $stmt = $conn->prepare(
         "INSERT INTO password_resets (email, code, expires_at)
-         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 15 MINUTE))"
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))"
     );
     $stmt->bind_param("ss", $email, $code);
     $stmt->execute();

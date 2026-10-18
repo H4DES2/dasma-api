@@ -45,7 +45,7 @@ function sendBrevoOtpEmail($recipientEmail, $recipientName, $otpCode) {
                 <p>Hello ' . htmlspecialchars($recipientName) . ',</p>
                 <p>Your one-time verification code is:</p>
                 <div style="font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #d32f2f; margin: 16px 0;">' . $otpCode . '</div>
-                <p>This code will expire shortly. Do not share it with anyone.</p>
+                <p>This code will expire in <strong>5 minutes</strong>. Do not share it with anyone.</p>
             </div>'
     ];
 
